@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { Scenario } from "@/lib/tco";
+import { grownInvestment, type Scenario } from "@/lib/tco";
 
 const eur = (n: number) =>
   new Intl.NumberFormat("fi-FI", { style: "currency", currency: "EUR", maximumFractionDigits: 0 }).format(n);
@@ -10,9 +10,12 @@ const kEur = (n: number) => `${n < 0 ? "−" : ""}${Math.round(Math.abs(n) / 100
 type Option = { key: "cash" | "loan"; label: string; color: string; scenario: Scenario };
 type Line = {
   key: string;
-  option: Option;
+  /** Lump sum / financed, or null for the existing-investments baseline. */
+  option: Option | null;
+  color: string;
   label: string;
   dashed: boolean;
+  dotted?: boolean;
   values: number[];
   /** Value after the sale, drawn as a vertical step at the last month (null = no step). */
   end: number | null;
@@ -48,7 +51,20 @@ function spreadLabels(ys: number[], min: number, max: number): number[] {
  * mode "chart": money paid into the car (solid) vs the same money invested instead (dashed).
  *               The gap between them is the lost return, compounding over time.
  */
-export function CashflowChart({ cash, loan, mode }: { cash: Scenario; loan: Scenario; mode: "cost" | "chart" }) {
+export function CashflowChart({
+  cash,
+  loan,
+  mode,
+  alreadyInvested = 0,
+  expectedReturn = 0,
+}: {
+  cash: Scenario;
+  loan: Scenario;
+  mode: "cost" | "chart";
+  /** Existing investments: in chart mode, shown growing and stacked under the dashed lines. */
+  alreadyInvested?: number;
+  expectedReturn?: number;
+}) {
   const wrap = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(600);
   const [hover, setHover] = useState<number | null>(null);
@@ -66,21 +82,40 @@ export function CashflowChart({ cash, loan, mode }: { cash: Scenario; loan: Scen
     { key: "loan", label: "Financed", color: "var(--series-2)", scenario: loan },
   ];
   const months = cash.cumulativeCash.length - 1;
+  const hasBase = mode === "chart" && alreadyInvested > 0;
+  const base = Array.from({ length: months + 1 }, (_, m) => (hasBase ? grownInvestment(alreadyInvested, expectedReturn, m) : 0));
 
   const lines: Line[] =
     mode === "cost"
       ? options.map((o) => ({
           key: o.key,
           option: o,
+          color: o.color,
           label: o.label,
           dashed: false,
           values: o.scenario.cumulativeCash,
           end: o.scenario.cumulativeCash[months] + o.scenario.saleProceeds,
         }))
-      : options.flatMap((o) => [
+      : [
+          ...(hasBase
+            ? [
+                {
+                  key: "base",
+                  option: null,
+                  color: "var(--baseline)",
+                  label: "Already invested",
+                  dashed: false,
+                  dotted: true,
+                  values: base,
+                  end: null,
+                } as Line,
+              ]
+            : []),
+          ...options.flatMap((o) => [
           {
             key: `${o.key}-paid`,
             option: o,
+            color: o.color,
             label: `${o.label}, paid`,
             dashed: false,
             values: o.scenario.cumulativeCash.map((v) => -v),
@@ -89,12 +124,14 @@ export function CashflowChart({ cash, loan, mode }: { cash: Scenario; loan: Scen
           {
             key: `${o.key}-invested`,
             option: o,
+            color: o.color,
             label: `${o.label}, invested`,
             dashed: true,
-            values: o.scenario.investedValue,
+            values: o.scenario.investedValue.map((v, m) => v + base[m]),
             end: null,
           },
-        ]);
+        ] as Line[]),
+        ];
 
   const all = lines.flatMap((l) => [...l.values, ...(l.end !== null ? [l.end] : []), 0]);
   const step = niceStep(Math.max(1, Math.max(...all) - Math.min(...all)));
@@ -147,8 +184,16 @@ export function CashflowChart({ cash, loan, mode }: { cash: Scenario; loan: Scen
               <svg width="16" height="2" aria-hidden>
                 <line x1="0" x2="16" y1="1" y2="1" stroke="currentColor" strokeWidth="2" strokeDasharray="4 3" />
               </svg>
-              Same money invested instead
+              {hasBase ? "Already invested + the same money invested instead" : "Same money invested instead"}
             </span>
+            {hasBase && (
+              <span className="flex items-center gap-1.5">
+                <svg width="16" height="2" aria-hidden>
+                  <line x1="1" x2="15" y1="1" y2="1" stroke="var(--baseline)" strokeWidth="2" strokeDasharray="1.5 4" strokeLinecap="round" />
+                </svg>
+                Already invested, growing on its own
+              </span>
+            )}
           </>
         )}
       </div>
@@ -178,9 +223,10 @@ export function CashflowChart({ cash, loan, mode }: { cash: Scenario; loan: Scen
             key={l.key}
             d={path(l)}
             fill="none"
-            stroke={l.option.color}
+            stroke={l.color}
             strokeWidth={2}
-            strokeDasharray={l.dashed ? "6 4" : undefined}
+            strokeDasharray={l.dotted ? "1.5 4" : l.dashed ? "6 4" : undefined}
+            strokeLinecap={l.dotted ? "round" : undefined}
             strokeLinejoin="round"
           />
         ))}
@@ -192,12 +238,15 @@ export function CashflowChart({ cash, loan, mode }: { cash: Scenario; loan: Scen
               x2={x(months) + 16}
               y1={labelY[i]}
               y2={labelY[i]}
-              stroke={l.option.color}
+              stroke={l.color}
               strokeWidth={2}
-              strokeDasharray={l.dashed ? "3 2" : undefined}
+              strokeDasharray={l.dotted ? "1 3" : l.dashed ? "3 2" : undefined}
+              strokeLinecap={l.dotted ? "round" : undefined}
             />
             <text x={x(months) + 20} y={labelY[i]} dy="0.32em" className="fill-zinc-700 text-[11px] tabular-nums dark:fill-zinc-300">
-              {mode === "cost" ? `${l.label} ${kEur(finalValue(l))} net` : `${l.dashed ? "Invested" : "Paid, net"} ${kEur(finalValue(l))}`}
+              {mode === "cost"
+                ? `${l.label} ${kEur(finalValue(l))} net`
+                : `${l.dotted ? "Already invested" : l.dashed ? "Invested" : "Paid, net"} ${kEur(finalValue(l))}`}
             </text>
           </g>
         ))}
@@ -205,7 +254,7 @@ export function CashflowChart({ cash, loan, mode }: { cash: Scenario; loan: Scen
           <g pointerEvents="none">
             <line x1={x(hover)} x2={x(hover)} y1={PAD.top} y2={PAD.top + innerH} stroke="var(--crosshair)" strokeWidth={1} />
             {lines.map((l) => (
-              <circle key={l.key} cx={x(hover)} cy={y(l.values[hover])} r={4} fill={l.option.color} stroke="var(--background)" strokeWidth={2} />
+              <circle key={l.key} cx={x(hover)} cy={y(l.values[hover])} r={4} fill={l.color} stroke="var(--background)" strokeWidth={2} />
             ))}
           </g>
         )}
@@ -245,7 +294,14 @@ export function CashflowChart({ cash, loan, mode }: { cash: Scenario; loan: Scen
               </p>
             </>
           ) : (
-            options.map((o) => {
+            <>
+            {hasBase && (
+              <p className="mt-1.5 flex justify-between tabular-nums">
+                <span className="text-zinc-500">Already invested, now</span>
+                {eur(base[hover])}
+              </p>
+            )}
+            {options.map((o) => {
               const paid = -o.scenario.cumulativeCash[hover];
               const invested = o.scenario.investedValue[hover];
               return (
@@ -262,13 +318,20 @@ export function CashflowChart({ cash, loan, mode }: { cash: Scenario; loan: Scen
                     <span className="text-zinc-500">If invested</span>
                     {eur(invested)}
                   </p>
+                  {hasBase && (
+                    <p className="flex justify-between pl-3.5">
+                      <span className="text-zinc-500">Portfolio then</span>
+                      {eur(invested + base[hover])}
+                    </p>
+                  )}
                   <p className="flex justify-between pl-3.5">
                     <span className="text-zinc-500">Lost returns</span>
                     {eur(invested - paid)}
                   </p>
                 </div>
               );
-            })
+            })}
+            </>
           )}
           {hover === months && (
             <p className="mt-1.5 text-zinc-500">

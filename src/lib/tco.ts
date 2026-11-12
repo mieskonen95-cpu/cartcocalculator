@@ -33,6 +33,11 @@ export interface Assumptions {
    * "chart": they're left out of the total and shown in the cash flow chart instead.
    */
   opportunityMode: "cost" | "chart";
+  /**
+   * What you already have invested (stocks, funds…), EUR. Shown growing in the chart. It doesn't
+   * change lost returns: returns are proportional, so the car money earns the same either way.
+   */
+  alreadyInvested: number;
 }
 
 /** Kinds of money leaving your pocket during ownership. */
@@ -96,6 +101,7 @@ export function defaultAssumptions(powertrain: Powertrain): Assumptions {
     expectedReturn: 0.06,
     opportunityOn: { equity: true, principal: true, interest: true, running: true },
     opportunityMode: "cost",
+    alreadyInvested: 0,
   };
 }
 
@@ -223,6 +229,11 @@ export interface Scenario {
 }
 
 /** Monthly payment of an annuity loan. */
+/** Value of an existing investment after `months`, with the same compounding as the car money. */
+export function grownInvestment(amount: number, annualReturn: number, months: number): number {
+  return amount * Math.pow(1 + annualReturn, months / 12);
+}
+
 export function annuityPayment(principal: number, annualRate: number, termYears: number): number {
   const n = Math.max(1, Math.round(termYears * 12));
   const r = annualRate / 12;

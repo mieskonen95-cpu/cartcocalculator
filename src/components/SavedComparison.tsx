@@ -24,8 +24,9 @@ export const COST_COLORS: Record<CostLine["key"], string> = {
   interest: "bg-slate-500",
   opportunity: "bg-teal-500",
 };
-/** Ticket or bike costs, the alternatives' only spend. */
+/** Ticket or bike costs, and extra taxi rides: the alternatives' spend. */
 const TRANSPORT_COLOR = "bg-lime-600";
+const RIDES_COLOR = "bg-pink-500";
 
 const COST_LABELS: Record<CostLine["key"], string> = {
   depreciation: "Depreciation",
@@ -54,6 +55,8 @@ const eur = (n: number, digits = 0) =>
   new Intl.NumberFormat("fi-FI", { style: "currency", currency: "EUR", maximumFractionDigits: digits, minimumFractionDigits: digits }).format(n);
 const int = (n: number) => new Intl.NumberFormat("fi-FI").format(Math.round(n));
 
+type SegmentKey = CostLine["key"] | "transport" | "rides";
+
 /** One column of the comparison: a saved car or a car-free alternative. */
 interface Column {
   id: string;
@@ -63,7 +66,7 @@ interface Column {
   perMonth: number;
   perKm: number;
   /** Bar segments and table rows. `transport` is the alternatives' ticket/bike spend. */
-  costs: Partial<Record<CostLine["key"] | "transport", number>>;
+  costs: Partial<Record<SegmentKey, number>>;
   info: { price: string; type: string; yearKm: string; ownership: string; payment: string };
   insuranceEstimated?: boolean;
   insuranceHighPower?: boolean;
@@ -126,13 +129,20 @@ export function SavedComparison({
           total: r.total,
           perMonth: r.perMonth,
           perKm: r.perKm,
-          costs: { transport: r.spend, ...(reference.opportunityMode === "cost" ? { opportunity: r.lostReturns } : {}) },
+          costs: {
+            transport: r.spend - r.rides,
+            ...(k === "transit" ? { rides: r.rides } : {}),
+            ...(reference.opportunityMode === "cost" ? { opportunity: r.lostReturns } : {}),
+          },
           info: {
             price: "—",
             type: ALTERNATIVE_LABELS[k].detail,
             yearKm: "—",
             ownership: `${reference.years} y · ${int(reference.kmPerYear)} km/y`,
-            payment: k === "transit" ? `${eur(alts.transit.pricePer30Days, 2)} / 30 days` : `${eur(alts.bike.perMonth)} / month`,
+            payment:
+              k === "transit"
+                ? `${eur(alts.transit.pricePer30Days, 2)} / 30 days + ${alts.transit.ridesPerMonth} × ${eur(alts.transit.pricePerRide)} rides / month`
+                : `${eur(alts.bike.perMonth)} / month`,
           },
         };
       });
@@ -144,11 +154,14 @@ export function SavedComparison({
   const differing = differingSettings(saved);
   const keys = Object.keys(COST_LABELS) as CostLine["key"][];
   const anyAlt = columns.some((c) => c.alternative);
-  const segments: [CostLine["key"] | "transport", string][] = [
-    ...(anyAlt ? [["transport", TRANSPORT_COLOR] as [ "transport", string]] : []),
-    ...keys.map((k) => [k, COST_COLORS[k]] as [CostLine["key"], string]),
+  const anyRides = columns.some((c) => (c.costs.rides ?? 0) > 0);
+  const segments: [SegmentKey, string][] = [
+    ...(anyAlt ? [["transport", TRANSPORT_COLOR] as [SegmentKey, string]] : []),
+    ...(anyRides ? [["rides", RIDES_COLOR] as [SegmentKey, string]] : []),
+    ...keys.map((k) => [k, COST_COLORS[k]] as [SegmentKey, string]),
   ];
-  const segmentLabel = (k: CostLine["key"] | "transport") => (k === "transport" ? "Ticket / bike" : COST_LABELS[k]);
+  const segmentLabel = (k: SegmentKey) =>
+    k === "transport" ? "Ticket / bike" : k === "rides" ? "Taxi rides (Uber, Bolt)" : COST_LABELS[k];
 
   return (
     <section className="mt-10 min-w-0 rounded-xl border border-zinc-200 p-5 dark:border-zinc-800">
@@ -166,7 +179,7 @@ export function SavedComparison({
       <fieldset className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
         <legend className="sr-only">Compare with</legend>
         <span className="text-zinc-500">Compare with:</span>
-        <label className="flex items-center gap-2">
+        <label className="flex flex-wrap items-center gap-2">
           <input
             type="checkbox"
             checked={alts.transit.on}
@@ -181,8 +194,24 @@ export function SavedComparison({
             label="Season ticket price per 30 days"
             onChange={(v) => updateAlts({ ...alts, transit: { ...alts.transit, pricePer30Days: v } })}
           />
+          <span className="text-zinc-500">+</span>
+          <MiniNum
+            value={alts.transit.ridesPerMonth}
+            step={1}
+            unit="rides / mo"
+            label="Extra Uber or Bolt rides per month"
+            onChange={(v) => updateAlts({ ...alts, transit: { ...alts.transit, ridesPerMonth: v } })}
+          />
+          <span className="text-zinc-500">×</span>
+          <MiniNum
+            value={alts.transit.pricePerRide}
+            step={1}
+            unit="€ / ride"
+            label="Price per Uber or Bolt ride"
+            onChange={(v) => updateAlts({ ...alts, transit: { ...alts.transit, pricePerRide: v } })}
+          />
         </label>
-        <label className="flex items-center gap-2">
+        <label className="flex flex-wrap items-center gap-2">
           <input
             type="checkbox"
             checked={alts.bike.on}

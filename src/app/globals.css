@@ -7,6 +7,7 @@
   --series-2: #eb6834;
   --grid: #ececea;
   --crosshair: #a3a29c;
+  --baseline: #7d7c76;
 }
 
 @theme inline {
@@ -24,6 +25,7 @@
     --series-2: #d95926;
     --grid: #262624;
     --crosshair: #6b6a65;
+    --baseline: #a3a29c;
   }
 }
 

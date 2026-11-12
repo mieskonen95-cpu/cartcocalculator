@@ -9,19 +9,20 @@ import { type Assumptions, simulateOwnership } from "./tco";
 export type AlternativeKind = "transit" | "bike";
 
 export interface AlternativeSettings {
-  transit: { on: boolean; pricePer30Days: number };
+  /** Season ticket, plus extra taxi rides (Uber, Bolt…) for trips transit doesn't cover. */
+  transit: { on: boolean; pricePer30Days: number; ridesPerMonth: number; pricePerRide: number };
   bike: { on: boolean; perMonth: number };
 }
 
 export const DEFAULT_ALTERNATIVES: AlternativeSettings = {
   // Season ticket (kausilippu), 30 days, bought as a one-off purchase.
-  transit: { on: true, pricePer30Days: 110.4 },
+  transit: { on: true, pricePer30Days: 110.4, ridesPerMonth: 2, pricePerRide: 20 },
   // Bike, maintenance, gear and the odd repair.
   bike: { on: true, perMonth: 50 },
 };
 
 export const ALTERNATIVE_LABELS: Record<AlternativeKind, { title: string; detail: string }> = {
-  transit: { title: "Public transport", detail: "30-day season ticket" },
+  transit: { title: "Public transport", detail: "Season ticket + Uber/Bolt rides" },
   bike: { title: "Cycling", detail: "Bike & upkeep" },
 };
 
@@ -30,6 +31,8 @@ export interface AlternativeResult {
   perYear: number;
   /** Ticket or bike costs over the period, without lost returns. */
   spend: number;
+  /** Of which: extra taxi rides (public transport only). */
+  rides: number;
   lostReturns: number;
   /** Total, including lost returns when they're counted as a cost. */
   total: number;
@@ -37,8 +40,12 @@ export interface AlternativeResult {
   perKm: number;
 }
 
+export function ridesPerYear(s: AlternativeSettings): number {
+  return s.transit.ridesPerMonth * s.transit.pricePerRide * 12;
+}
+
 export function alternativePerYear(kind: AlternativeKind, s: AlternativeSettings): number {
-  return kind === "transit" ? (s.transit.pricePer30Days * 365) / 30 : s.bike.perMonth * 12;
+  return kind === "transit" ? (s.transit.pricePer30Days * 365) / 30 + ridesPerYear(s) : s.bike.perMonth * 12;
 }
 
 /** Cost of an alternative over the ownership period and km of `a`. */
@@ -52,7 +59,8 @@ export function computeAlternative(kind: AlternativeKind, s: AlternativeSettings
   const lostReturns = sim.opportunityCost;
   const total = spend + (a.opportunityMode === "cost" ? lostReturns : 0);
   const km = a.kmPerYear * years;
-  return { kind, perYear, spend, lostReturns, total, perMonth: total / (years * 12), perKm: km > 0 ? total / km : 0 };
+  const rides = kind === "transit" ? ridesPerYear(s) * years : 0;
+  return { kind, perYear, spend, rides, lostReturns, total, perMonth: total / (years * 12), perKm: km > 0 ? total / km : 0 };
 }
 
 const KEY = "cartco.alternatives.v1";

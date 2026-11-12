@@ -16,6 +16,7 @@ import {
   defaultAssumptions,
   inspectionsDuring,
   simulateOwnership,
+  grownInvestment,
   type Assumptions,
 } from "../src/lib/tco";
 import { differingSettings, loadSaved, storeSaved, upsert } from "../src/lib/saved";
@@ -170,6 +171,14 @@ describe("tco helpers", () => {
     const lump = simulateOwnership(10000, base({ opportunityOn: { ...allOff, equity: true } }), "cash", 36, 0, 0);
     expect(lump.investedValue[36]).toBeCloseTo(10000 * 1.06 ** 3, 6);
     expect(lump.opportunityCost).toBeGreaterThan(10000 * 0.06 * 3);
+  });
+
+  it("existing investments grow on their own and don't change lost returns", () => {
+    expect(grownInvestment(50000, 0.06, 36)).toBeCloseTo(50000 * 1.06 ** 3, 6);
+    expect(grownInvestment(50000, 0.06, 0)).toBe(50000);
+    const none = simulateOwnership(15000, base({ alreadyInvested: 0 }), "cash", 36, 150, 11000);
+    const lots = simulateOwnership(15000, base({ alreadyInvested: 100000 }), "cash", 36, 150, 11000);
+    expect(lots.opportunityCost).toBe(none.opportunityCost);
   });
 
   it("switched-off outflows count as cash without growth in the invested line", () => {
@@ -443,13 +452,17 @@ describe("car-free alternatives", () => {
   const a = { ...defaultAssumptions("petrol"), years: 3, kmPerYear: 15000, expectedReturn: 0.06 };
 
   it("prices a 30-day season ticket and a monthly bike budget per year", () => {
-    expect(alternativePerYear("transit", DEFAULT_ALTERNATIVES)).toBeCloseTo((110.4 * 365) / 30, 6); // ≈ 1 343
+    // Ticket ≈ 1 343 €/yr + 2 rides × 20 € × 12 = 480 €/yr.
+    expect(alternativePerYear("transit", DEFAULT_ALTERNATIVES)).toBeCloseTo((110.4 * 365) / 30 + 480, 6);
+    const noRides = { ...DEFAULT_ALTERNATIVES, transit: { ...DEFAULT_ALTERNATIVES.transit, ridesPerMonth: 0 } };
+    expect(alternativePerYear("transit", noRides)).toBeCloseTo((110.4 * 365) / 30, 6);
     expect(alternativePerYear("bike", DEFAULT_ALTERNATIVES)).toBe(600);
   });
 
   it("adds lost returns on the monthly payments, like a car's running costs", () => {
     const t = computeAlternative("transit", DEFAULT_ALTERNATIVES, a);
-    expect(t.spend).toBeCloseTo(3 * (110.4 * 365) / 30, 6);
+    expect(t.spend).toBeCloseTo(3 * ((110.4 * 365) / 30 + 480), 6);
+    expect(t.rides).toBeCloseTo(3 * 480, 6);
     expect(t.lostReturns).toBeGreaterThan(0);
     expect(t.lostReturns).toBeLessThan(t.spend * (1.06 ** 3 - 1)); // paid monthly, not up front
     expect(t.total).toBeCloseTo(t.spend + t.lostReturns, 6);

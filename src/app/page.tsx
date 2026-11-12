@@ -482,6 +482,19 @@ export default function Home() {
                   ? "Added to the total cost of ownership."
                   : "Left out of the total; the chart below shows how the money would grow invested."}
               </p>
+              <Num
+                label="Already invested"
+                unit="€"
+                step={1000}
+                value={assumptions.alreadyInvested || null}
+                placeholder="0"
+                onChange={(v) => setA("alreadyInvested", Math.max(0, v ?? 0))}
+              />
+              <p className="-mt-1 text-xs text-zinc-500">
+                Stocks, funds etc. you already hold. {assumptions.opportunityMode === "chart" ? "Shown" : "With “Show in chart”, it’s shown"}{" "}
+                growing in the chart under the car money. It doesn&apos;t change lost returns: returns grow in proportion to
+                the money, so the car money earns the same on top of any amount.
+              </p>
               <fieldset className="space-y-2">
                 <legend className="mb-2 text-sm">Count lost returns on</legend>
                 {(Object.keys(OUTFLOW_LABELS) as OutflowKind[]).map((k) => {
@@ -646,7 +659,13 @@ export default function Home() {
               <LostReturnsToggle value={assumptions.opportunityMode} onChange={(v) => setA("opportunityMode", v)} />
             </div>
             <div className="mt-4">
-              <CashflowChart cash={result.scenarios.cash} loan={result.scenarios.loan} mode={assumptions.opportunityMode} />
+              <CashflowChart
+                cash={result.scenarios.cash}
+                loan={result.scenarios.loan}
+                mode={assumptions.opportunityMode}
+                alreadyInvested={assumptions.alreadyInvested}
+                expectedReturn={assumptions.expectedReturn}
+              />
             </div>
             <div className="mt-5 overflow-x-auto">
               <table className="w-full text-xs tabular-nums sm:text-sm">
