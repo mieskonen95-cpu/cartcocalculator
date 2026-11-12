@@ -8,7 +8,8 @@ import {
   computeTco,
   defaultAssumptions,
   inspectionsDuring,
-  financingCosts,
+  simulateOwnership,
+  type Assumptions,
 } from "../src/lib/tco";
 
 const fixture = (name: string) => readFileSync(join(__dirname, "fixtures", name), "utf8");
@@ -91,31 +92,63 @@ describe("tco helpers", () => {
     expect(inspectionsDuring(3, 6)).toBe(4); // 4, 6, 8, 9
     expect(inspectionsDuring(12, 3)).toBe(3);
   });
+  const base = (over: Partial<Assumptions> = {}): Assumptions => ({
+    ...defaultAssumptions("petrol"),
+    loanInterestRate: 0.06,
+    loanTermYears: 5,
+    expectedReturn: 0.06,
+    ...over,
+  });
+  const allOff = { equity: false, principal: false, interest: false, running: false };
+
   it("charges the forgone return on a lump-sum purchase", () => {
-    const a = { ...defaultAssumptions("petrol"), financing: "cash" as const, expectedReturn: 0.06 };
-    const f = financingCosts(20000, a, 36);
-    expect(f).toMatchObject({ equity: 20000, loanAmount: 0, interest: 0 });
+    const only = base({ opportunityOn: { ...allOff, equity: true } });
+    const f = simulateOwnership(20000, only, "cash", 36, 0, 15000);
+    expect(f).toMatchObject({ equity: 20000, loanAmount: 0, interest: 0, saleProceeds: 15000 });
     expect(f.opportunityCost).toBeCloseTo(20000 * (1.06 ** 3 - 1), 6);
   });
-  it("splits a financed purchase into equity, interest and opportunity cost", () => {
-    const base = { ...defaultAssumptions("petrol"), financing: "loan" as const, loanInterestRate: 0.06, loanTermYears: 5 };
-    const full = financingCosts(15000, { ...base, downPayment: 5000, expectedReturn: 0 }, 60);
-    expect(full.loanAmount).toBe(10000);
-    expect(full.monthlyPayment).toBeCloseTo(193.33, 2);
-    expect(full.interest).toBeGreaterThan(1590);
-    expect(full.interest).toBeLessThan(1610);
-    expect(full.remainingBalance).toBeCloseTo(0, 6);
-    expect(full.opportunityCost).toBe(0);
-    // A bigger down payment means less interest but more forgone return.
-    const low = financingCosts(15000, { ...base, downPayment: 2000, expectedReturn: 0.06 }, 36);
-    const high = financingCosts(15000, { ...base, downPayment: 10000, expectedReturn: 0.06 }, 36);
-    expect(high.interest).toBeLessThan(low.interest);
-    expect(high.opportunityCost).toBeGreaterThan(low.opportunityCost);
-    expect(high.remainingBalance).toBeGreaterThan(0);
+
+  it("runs an annuity loan correctly", () => {
+    const f = simulateOwnership(15000, base({ downPayment: 5000, expectedReturn: 0 }), "loan", 60, 0, 0);
+    expect(f.loanAmount).toBe(10000);
+    expect(f.monthlyPayment).toBeCloseTo(193.33, 2);
+    expect(f.interest).toBeGreaterThan(1590);
+    expect(f.interest).toBeLessThan(1610);
+    expect(f.remainingBalance).toBeCloseTo(0, 6);
+    expect(f.opportunityCost).toBe(0);
   });
+
+  it("only charges opportunity cost on the outflows switched on", () => {
+    const run = (on: Assumptions["opportunityOn"]) =>
+      simulateOwnership(15000, base({ downPayment: 5000, opportunityOn: on }), "loan", 36, 200, 10000);
+    const all = run({ equity: true, principal: true, interest: true, running: true });
+    const none = run(allOff);
+    expect(none.opportunityCost).toBe(0);
+    const parts = (["equity", "principal", "interest", "running"] as const).map(
+      (k) => run({ ...allOff, [k]: true }).opportunityCost,
+    );
+    parts.forEach((p) => expect(p).toBeGreaterThan(0));
+    expect(parts.reduce((x, y) => x + y, 0)).toBeCloseTo(all.opportunityCost, 6);
+    // Running costs paid monthly forgo less than the same total paid on day 0.
+    expect(parts[3]).toBeLessThan(200 * 36 * (1.06 ** 3 - 1));
+  });
+
+  it("balances cash: paid out minus sale = depreciation + interest + running", () => {
+    for (const f of ["cash", "loan"] as const) {
+      const sc = simulateOwnership(15000, base({ downPayment: 3000 }), f, 36, 150, 11000);
+      const net = sc.totalPaidOut - sc.saleProceeds;
+      expect(net).toBeCloseTo(15000 - 11000 + sc.interest + 150 * 36, 6);
+      expect(sc.cumulativeCash).toHaveLength(37);
+      expect(sc.cumulativeCash[36]).toBeCloseTo(-sc.totalPaidOut, 6);
+    }
+  });
+
   it("caps the down payment at the price", () => {
-    const a = { ...defaultAssumptions("petrol"), financing: "loan" as const, downPayment: 99999 };
-    expect(financingCosts(10000, a, 12)).toMatchObject({ equity: 10000, loanAmount: 0, interest: 0 });
+    expect(simulateOwnership(10000, base({ downPayment: 99999 }), "loan", 12, 0, 8000)).toMatchObject({
+      equity: 10000,
+      loanAmount: 0,
+      interest: 0,
+    });
   });
   it("produces a consistent breakdown", () => {
     const l = parseListing(fixture("a6.html"), "https://www.nettiauto.com/audi/a6/15911646");
@@ -123,6 +156,7 @@ describe("tco helpers", () => {
     const sum = r.lines.reduce((s, x) => s + x.total, 0);
     expect(r.total).toBeCloseTo(sum, 6);
     expect(r.perMonth).toBeCloseTo(r.total / 36, 6);
+    expect(r.scenarios.cash.tco).toBeCloseTo(r.total, 6); // default is a lump sum
     expect(r.lines.find((x) => x.key === "inspections")!.total).toBe(120); // ages ~5.6→8.6: due at 6 and 8
   });
 });

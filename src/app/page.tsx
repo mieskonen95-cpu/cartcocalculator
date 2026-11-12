@@ -1,12 +1,16 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { CashflowChart } from "@/components/CashflowChart";
 import type { Listing, Powertrain } from "@/lib/listing";
 import {
   type Assumptions,
   type CarInputs,
   carInputsFromListing,
   computeTco,
+  OUTFLOW_LABELS,
+  type OutflowKind,
+  type TcoResult,
   defaultAssumptions,
 } from "@/lib/tco";
 
@@ -280,9 +284,30 @@ export default function Home() {
                 </>
               )}
               <Pct label="Expected stock market return" value={assumptions.expectedReturn} onChange={(v) => setA("expectedReturn", v)} />
-              <p className="-mt-1 text-xs text-zinc-500">
-                Per year, after tax. Applied to the {assumptions.financing === "loan" ? "down payment and loan repayments" : "lump sum"}.
-              </p>
+              <p className="-mt-1 text-xs text-zinc-500">Per year, after tax.</p>
+              <fieldset className="space-y-2">
+                <legend className="mb-2 text-sm">Count lost returns on</legend>
+                {(Object.keys(OUTFLOW_LABELS) as OutflowKind[]).map((k) => {
+                  const na = assumptions.financing === "cash" && (k === "principal" || k === "interest");
+                  return (
+                    <label key={k} className={`flex items-center justify-between gap-4 text-sm ${na ? "text-zinc-400" : ""}`}>
+                      <span className="flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={assumptions.opportunityOn[k]}
+                          onChange={(e) => setA("opportunityOn", { ...assumptions.opportunityOn, [k]: e.target.checked })}
+                          disabled={na}
+                          className="h-4 w-4 accent-indigo-600"
+                        />
+                        {OUTFLOW_LABELS[k]}
+                      </span>
+                      <span className="tabular-nums text-zinc-500">
+                        {na ? "n/a" : assumptions.opportunityOn[k] ? eur(result.financing.opportunityByKind[k]) : "off"}
+                      </span>
+                    </label>
+                  );
+                })}
+              </fieldset>
             </Card>
           </div>
 
@@ -362,6 +387,67 @@ export default function Home() {
             </section>
           </div>
         </div>
+      )}
+
+      {listing && car && assumptions && result && (
+          <section className="mt-6 min-w-0 rounded-xl border border-zinc-200 p-5 dark:border-zinc-800">
+            <h2 className="font-medium">Lump sum vs financed</h2>
+            <p className="mt-0.5 text-sm text-zinc-500">
+              Cash out of your pocket over time, including running costs. The step at the end is selling the car
+              {assumptions.financing === "loan" ? "" : ` (financed: ${eur(Math.min(assumptions.downPayment, car.price))} down, ${Math.round(assumptions.loanInterestRate * 1000) / 10} %, ${assumptions.loanTermYears} years)`}.
+            </p>
+            <div className="mt-4">
+              <CashflowChart cash={result.scenarios.cash} loan={result.scenarios.loan} />
+            </div>
+            <div className="mt-5 overflow-x-auto">
+              <table className="w-full text-xs tabular-nums sm:text-sm">
+                <thead>
+                  <tr className="border-b border-zinc-200 text-left text-zinc-500 dark:border-zinc-800">
+                    <th className="py-2 font-normal" />
+                    <th className="py-2 pl-3 text-right font-normal">Lump sum</th>
+                    <th className="py-2 pl-3 text-right font-normal">Financed</th>
+                    <th className="py-2 pl-3 text-right font-normal">Difference</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
+                  {(
+                    [
+                      ["Paid on purchase day", (s) => s.equity],
+                      ["Monthly loan payment", (s) => s.monthlyPayment],
+                      ["Total paid out", (s) => s.totalPaidOut],
+                      ["Back from the sale", (s) => s.saleProceeds],
+                      ["Interest paid", (s) => s.interest],
+                      ["Lost returns", (s) => s.opportunityCost],
+                      ["Total cost of ownership", (s) => s.tco],
+                    ] as [string, (s: TcoResult["scenarios"]["cash"]) => number][]
+                  ).map(([label, f], i, rows) => {
+                    const c = f(result.scenarios.cash);
+                    const l = f(result.scenarios.loan);
+                    const last = i === rows.length - 1;
+                    return (
+                      <tr key={label} className={last ? "font-medium" : ""}>
+                        <td className="py-2">{label}</td>
+                        <td className="whitespace-nowrap py-2 pl-3 text-right">{eur(c)}</td>
+                        <td className="whitespace-nowrap py-2 pl-3 text-right">{eur(l)}</td>
+                        <td className="whitespace-nowrap py-2 pl-3 text-right text-zinc-500">
+                          {Math.abs(l - c) < 0.5 ? "—" : `${l > c ? "+" : "−"}${eur(Math.abs(l - c))}`}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <p className="mt-3 text-sm text-zinc-500">
+              {(() => {
+                const d = result.scenarios.loan.tco - result.scenarios.cash.tco;
+                if (Math.abs(d) < 50) return "With these assumptions the two options cost about the same.";
+                return d > 0
+                  ? `Paying a lump sum is ${eur(d)} cheaper overall: the loan interest costs more than your money would earn invested.`
+                  : `Financing is ${eur(-d)} cheaper overall: your money earns more invested than the loan costs.`;
+              })()}
+            </p>
+          </section>
       )}
 
       <footer className="mt-16 text-xs text-zinc-500">
