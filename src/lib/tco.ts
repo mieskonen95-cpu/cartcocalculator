@@ -28,6 +28,11 @@ export interface Assumptions {
   expectedReturn: number;
   /** Which cash outflows are charged the forgone investment return. */
   opportunityOn: Record<OutflowKind, boolean>;
+  /**
+   * "cost": lost returns are added to the total cost of ownership.
+   * "chart": they're left out of the total and shown in the cash flow chart instead.
+   */
+  opportunityMode: "cost" | "chart";
 }
 
 /** Kinds of money leaving your pocket during ownership. */
@@ -90,6 +95,7 @@ export function defaultAssumptions(powertrain: Powertrain): Assumptions {
     loanTermYears: 5,
     expectedReturn: 0.06,
     opportunityOn: { equity: true, principal: true, interest: true, running: true },
+    opportunityMode: "cost",
   };
 }
 
@@ -208,6 +214,12 @@ export interface Scenario {
    * The sale is not included; add `saleProceeds` at the last point.
    */
   cumulativeCash: number[];
+  /**
+   * What the money paid out so far would be worth at the end of each month had it been
+   * invested instead (monthly compounding; outflow kinds switched off just sit as cash).
+   * investedValue[m] − (−cumulativeCash[m]) = lost returns so far.
+   */
+  investedValue: number[];
 }
 
 /** Monthly payment of an annuity loan. */
@@ -246,16 +258,29 @@ export function simulateOwnership(
     if (a.opportunityOn[kind]) opp[kind] += amount * growth(months - month);
   };
 
+  // Running value of the money had it been invested: compounding part + plain cash part.
+  const monthlyGrowth = Math.pow(1 + a.expectedReturn, 1 / 12) - 1;
+  let investedGrowing = 0;
+  let notInvested = 0;
+  const invest = (kind: OutflowKind, amount: number) => {
+    if (a.opportunityOn[kind]) investedGrowing += amount;
+    else notInvested += amount;
+  };
+
   let balance = loanAmount;
   let interest = 0;
   let cash = -equity;
   let paidOut = equity;
   const cumulativeCash = [cash];
   charge("equity", equity, 0);
+  invest("equity", equity);
+  const investedValue = [investedGrowing + notInvested];
 
   for (let m = 1; m <= months; m++) {
+    investedGrowing *= 1 + monthlyGrowth; // returns on returns: last month's value grows too
     let out = runningPerMonth;
     charge("running", runningPerMonth, m);
+    invest("running", runningPerMonth);
     if (balance > 0 && m <= n) {
       const it = balance * rLoan;
       const principal = Math.min(balance, payment - it);
@@ -264,10 +289,13 @@ export function simulateOwnership(
       out += it + principal;
       charge("interest", it, m);
       charge("principal", principal, m);
+      invest("interest", it);
+      invest("principal", principal);
     }
     cash -= out;
     paidOut += out;
     cumulativeCash.push(cash);
+    investedValue.push(investedGrowing + notInvested);
   }
 
   const remainingBalance = Math.max(0, balance);
@@ -283,6 +311,7 @@ export function simulateOwnership(
     opportunityCost: opp.equity + opp.principal + opp.interest + opp.running,
     opportunityByKind: opp,
     cumulativeCash,
+    investedValue,
   };
 }
 
@@ -323,7 +352,8 @@ export function computeTco(car: CarInputs, a: Assumptions, today = new Date()): 
   const months = Math.max(1, Math.round(years * 12));
   const scenario = (f: "cash" | "loan") => {
     const sc = simulateOwnership(car.price, a, f, months, runningTotal / months, residualValue);
-    return { ...sc, tco: depreciation + runningTotal + sc.interest + sc.opportunityCost };
+    const lost = a.opportunityMode === "cost" ? sc.opportunityCost : 0;
+    return { ...sc, tco: depreciation + runningTotal + sc.interest + lost };
   };
   const scenarios = { cash: scenario("cash"), loan: scenario("loan") };
   const financing = scenarios[a.financing];
@@ -332,7 +362,9 @@ export function computeTco(car: CarInputs, a: Assumptions, today = new Date()): 
     { key: "depreciation", label: "Depreciation", total: depreciation },
     ...running,
     { key: "interest", label: "Loan interest", total: financing.interest },
-    { key: "opportunity", label: "Opportunity cost (lost returns)", total: financing.opportunityCost },
+    ...(a.opportunityMode === "cost"
+      ? [{ key: "opportunity" as const, label: "Opportunity cost (lost returns)", total: financing.opportunityCost }]
+      : []),
   ];
 
   const total = lines.reduce((s, l) => s + l.total, 0);

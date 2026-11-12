@@ -475,7 +475,13 @@ export default function Home() {
                 </>
               )}
               <Pct label="Expected stock market return" value={assumptions.expectedReturn} onChange={(v) => setA("expectedReturn", v)} />
-              <p className="-mt-1 text-xs text-zinc-500">Per year, after tax.</p>
+              <p className="-mt-1 text-xs text-zinc-500">Per year, after tax. Returns earn returns (monthly compounding).</p>
+              <LostReturnsToggle value={assumptions.opportunityMode} onChange={(v) => setA("opportunityMode", v)} />
+              <p className="-mt-1 text-xs text-zinc-500">
+                {assumptions.opportunityMode === "cost"
+                  ? "Added to the total cost of ownership."
+                  : "Left out of the total; the chart below shows how the money would grow invested."}
+              </p>
               <fieldset className="space-y-2">
                 <legend className="mb-2 text-sm">Count lost returns on</legend>
                 {(Object.keys(OUTFLOW_LABELS) as OutflowKind[]).map((k) => {
@@ -582,6 +588,15 @@ export default function Home() {
               <p className="mt-3 text-sm text-zinc-500">
                 Estimated resale value after {assumptions.years} years: <strong>{eur(result.residualValue)}</strong>
               </p>
+              {assumptions.opportunityMode === "chart" && (
+                <p className="mt-1 text-sm text-zinc-500">
+                  Not included: {eur(result.financing.opportunityCost)} of lost investment returns, shown in the{" "}
+                  <a href="#cashflow" className="underline">
+                    chart below
+                  </a>
+                  .
+                </p>
+              )}
             </section>
 
             <section className="rounded-xl border border-zinc-200 p-5 text-sm dark:border-zinc-800">
@@ -619,14 +634,19 @@ export default function Home() {
       )}
 
       {listing && car && assumptions && result && (
-          <section className="mt-6 min-w-0 rounded-xl border border-zinc-200 p-5 dark:border-zinc-800">
+          <section id="cashflow" className="mt-6 min-w-0 scroll-mt-6 rounded-xl border border-zinc-200 p-5 dark:border-zinc-800">
             <h2 className="font-medium">Lump sum vs financed</h2>
             <p className="mt-0.5 text-sm text-zinc-500">
-              Cash out of your pocket over time, including running costs. The step at the end is selling the car
+              {assumptions.opportunityMode === "cost"
+                ? "Cash out of your pocket over time, including running costs. The step at the end is selling the car"
+                : `Solid: money paid into the car, including running costs; it steps down when you sell. Dashed: the same money invested at ${Math.round(assumptions.expectedReturn * 1000) / 10} % a year instead, growing with returns on returns. The gap is the lost return. Paying a lump sum starts with more money in the car, so its gap compounds fastest`}
               {assumptions.financing === "loan" ? "" : ` (financed: ${eur(Math.min(assumptions.downPayment, car.price))} down, ${Math.round(assumptions.loanInterestRate * 1000) / 10} %, ${assumptions.loanTermYears} years)`}.
             </p>
+            <div className="mt-3 max-w-md">
+              <LostReturnsToggle value={assumptions.opportunityMode} onChange={(v) => setA("opportunityMode", v)} />
+            </div>
             <div className="mt-4">
-              <CashflowChart cash={result.scenarios.cash} loan={result.scenarios.loan} />
+              <CashflowChart cash={result.scenarios.cash} loan={result.scenarios.loan} mode={assumptions.opportunityMode} />
             </div>
             <div className="mt-5 overflow-x-auto">
               <table className="w-full text-xs tabular-nums sm:text-sm">
@@ -646,8 +666,16 @@ export default function Home() {
                       ["Total paid out", (s) => s.totalPaidOut],
                       ["Back from the sale", (s) => s.saleProceeds],
                       ["Interest paid", (s) => s.interest],
-                      ["Lost returns", (s) => s.opportunityCost],
-                      ["Total cost of ownership", (s) => s.tco],
+                      ...(assumptions.opportunityMode === "chart"
+                        ? ([
+                            ["Worth if invested instead", (s) => s.investedValue[s.investedValue.length - 1]],
+                            ["Lost returns (not in total)", (s) => s.opportunityCost],
+                            ["Total cost, without lost returns", (s) => s.tco],
+                          ] as [string, (s: TcoResult["scenarios"]["cash"]) => number][])
+                        : ([
+                            ["Lost returns", (s) => s.opportunityCost],
+                            ["Total cost of ownership", (s) => s.tco],
+                          ] as [string, (s: TcoResult["scenarios"]["cash"]) => number][])),
                     ] as [string, (s: TcoResult["scenarios"]["cash"]) => number][]
                   ).map(([label, f], i, rows) => {
                     const c = f(result.scenarios.cash);
@@ -669,6 +697,23 @@ export default function Home() {
             </div>
             <p className="mt-3 text-sm text-zinc-500">
               {(() => {
+                if (assumptions.opportunityMode === "chart") {
+                  const cashOnly = result.scenarios.loan.tco - result.scenarios.cash.tco;
+                  const withReturns =
+                    result.scenarios.loan.tco + result.scenarios.loan.opportunityCost -
+                    (result.scenarios.cash.tco + result.scenarios.cash.opportunityCost);
+                  const cashPart =
+                    cashOnly > 0.5
+                      ? `Counting cash only, the lump sum is ${eur(cashOnly)} cheaper (no interest).`
+                      : "Counting cash only, the two options cost about the same.";
+                  const withPart =
+                    Math.abs(withReturns) < 50
+                      ? " Including what your money would earn invested, they come out about even."
+                      : withReturns > 0
+                        ? ` Including what your money would earn invested, the lump sum is still ${eur(withReturns)} cheaper.`
+                        : ` Including what your money would earn invested, financing comes out ${eur(-withReturns)} ahead.`;
+                  return cashPart + withPart;
+                }
                 const d = result.scenarios.loan.tco - result.scenarios.cash.tco;
                 if (Math.abs(d) < 50) return "With these assumptions the two options cost about the same.";
                 return d > 0
@@ -689,6 +734,35 @@ export default function Home() {
         Estimates only. Not affiliated with Nettiauto. Vehicle tax rates: Traficom, 2026.
       </footer>
     </main>
+  );
+}
+
+function LostReturnsToggle({ value, onChange }: { value: "cost" | "chart"; onChange: (v: "cost" | "chart") => void }) {
+  return (
+    <div className="flex items-center justify-between gap-4 text-sm">
+      <span>Lost returns</span>
+      <div role="radiogroup" aria-label="Lost returns" className="flex w-56 rounded-md border border-zinc-300 p-0.5 dark:border-zinc-700">
+        {(
+          [
+            ["cost", "Count as cost"],
+            ["chart", "Show in chart"],
+          ] as const
+        ).map(([v, l]) => (
+          <button
+            key={v}
+            type="button"
+            role="radio"
+            aria-checked={value === v}
+            onClick={() => onChange(v)}
+            className={`flex-1 rounded px-2 py-1 ${
+              value === v ? "bg-indigo-600 text-white" : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
+            }`}
+          >
+            {l}
+          </button>
+        ))}
+      </div>
+    </div>
   );
 }
 

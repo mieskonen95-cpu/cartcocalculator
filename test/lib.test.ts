@@ -152,6 +152,30 @@ describe("tco helpers", () => {
     }
   });
 
+  it("tracks the invested value month by month with compounding", () => {
+    const a = base({ downPayment: 5000 });
+    for (const f of ["cash", "loan"] as const) {
+      const sc = simulateOwnership(15000, a, f, 36, 150, 11000);
+      expect(sc.investedValue).toHaveLength(37);
+      // Day 0: the lump sum or down payment, not yet grown.
+      expect(sc.investedValue[0]).toBe(f === "cash" ? 15000 : 5000);
+      // At the sale: invested value − cash paid out = lost returns.
+      expect(sc.investedValue[36] - sc.totalPaidOut).toBeCloseTo(sc.opportunityCost, 6);
+      // Lost returns so far never shrink.
+      const gap = sc.investedValue.map((v, m) => v + sc.cumulativeCash[m]);
+      gap.slice(1).forEach((g, i) => expect(g).toBeGreaterThanOrEqual(gap[i] - 1e-9));
+    }
+    // Returns on returns: a lump sum grows by (1.06^3 − 1), more than 3 × 6 %.
+    const lump = simulateOwnership(10000, base({ opportunityOn: { ...allOff, equity: true } }), "cash", 36, 0, 0);
+    expect(lump.investedValue[36]).toBeCloseTo(10000 * 1.06 ** 3, 6);
+    expect(lump.opportunityCost).toBeGreaterThan(10000 * 0.06 * 3);
+  });
+
+  it("switched-off outflows count as cash without growth in the invested line", () => {
+    const sc = simulateOwnership(15000, base({ opportunityOn: allOff }), "cash", 36, 150, 11000);
+    sc.investedValue.forEach((v, m) => expect(v).toBeCloseTo(-sc.cumulativeCash[m], 6));
+  });
+
   it("caps the down payment at the price", () => {
     expect(simulateOwnership(10000, base({ downPayment: 99999 }), "loan", 12, 0, 8000)).toMatchObject({
       equity: 10000,
@@ -166,6 +190,11 @@ describe("tco helpers", () => {
     expect(r.total).toBeCloseTo(sum, 6);
     expect(r.perMonth).toBeCloseTo(r.total / 36, 6);
     expect(r.scenarios.cash.tco).toBeCloseTo(r.total, 6); // default is a lump sum
+    // "Show in chart": lost returns leave the total and the breakdown.
+    const chart = computeTco(carInputsFromListing(l), { ...defaultAssumptions(l.powertrain), opportunityMode: "chart" }, new Date("2026-11-12"));
+    expect(chart.lines.some((x) => x.key === "opportunity")).toBe(false);
+    expect(chart.total).toBeCloseTo(r.total - r.financing.opportunityCost, 6);
+    expect(chart.scenarios.cash.tco).toBeCloseTo(chart.total, 6);
     expect(r.lines.find((x) => x.key === "inspections")!.total).toBe(120); // ages ~5.6→8.6: due at 6 and 8
   });
 });

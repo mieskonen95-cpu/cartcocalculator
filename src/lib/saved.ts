@@ -81,6 +81,7 @@ export function differingSettings(list: SavedCar[]): string[] {
     ["km per year", (a) => a.kmPerYear],
     ["expected return", (a) => a.expectedReturn],
     ["payment method", (a) => a.financing],
+    ["lost returns setting", (a) => a.opportunityMode],
   ];
   return checks.filter(([, f]) => new Set(list.map((s) => f(s.assumptions))).size > 1).map(([label]) => label);
 }
