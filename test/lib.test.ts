@@ -8,7 +8,7 @@ import {
   computeTco,
   defaultAssumptions,
   inspectionsDuring,
-  loanInterest,
+  financingCosts,
 } from "../src/lib/tco";
 
 const fixture = (name: string) => readFileSync(join(__dirname, "fixtures", name), "utf8");
@@ -91,11 +91,31 @@ describe("tco helpers", () => {
     expect(inspectionsDuring(3, 6)).toBe(4); // 4, 6, 8, 9
     expect(inspectionsDuring(12, 3)).toBe(3);
   });
-  it("computes loan interest for an annuity", () => {
-    expect(loanInterest(10000, 0, 5, 60)).toBe(0);
-    const full = loanInterest(10000, 0.06, 5, 60);
-    expect(full).toBeGreaterThan(1590);
-    expect(full).toBeLessThan(1610);
+  it("charges the forgone return on a lump-sum purchase", () => {
+    const a = { ...defaultAssumptions("petrol"), financing: "cash" as const, expectedReturn: 0.06 };
+    const f = financingCosts(20000, a, 36);
+    expect(f).toMatchObject({ equity: 20000, loanAmount: 0, interest: 0 });
+    expect(f.opportunityCost).toBeCloseTo(20000 * (1.06 ** 3 - 1), 6);
+  });
+  it("splits a financed purchase into equity, interest and opportunity cost", () => {
+    const base = { ...defaultAssumptions("petrol"), financing: "loan" as const, loanInterestRate: 0.06, loanTermYears: 5 };
+    const full = financingCosts(15000, { ...base, downPayment: 5000, expectedReturn: 0 }, 60);
+    expect(full.loanAmount).toBe(10000);
+    expect(full.monthlyPayment).toBeCloseTo(193.33, 2);
+    expect(full.interest).toBeGreaterThan(1590);
+    expect(full.interest).toBeLessThan(1610);
+    expect(full.remainingBalance).toBeCloseTo(0, 6);
+    expect(full.opportunityCost).toBe(0);
+    // A bigger down payment means less interest but more forgone return.
+    const low = financingCosts(15000, { ...base, downPayment: 2000, expectedReturn: 0.06 }, 36);
+    const high = financingCosts(15000, { ...base, downPayment: 10000, expectedReturn: 0.06 }, 36);
+    expect(high.interest).toBeLessThan(low.interest);
+    expect(high.opportunityCost).toBeGreaterThan(low.opportunityCost);
+    expect(high.remainingBalance).toBeGreaterThan(0);
+  });
+  it("caps the down payment at the price", () => {
+    const a = { ...defaultAssumptions("petrol"), financing: "loan" as const, downPayment: 99999 };
+    expect(financingCosts(10000, a, 12)).toMatchObject({ equity: 10000, loanAmount: 0, interest: 0 });
   });
   it("produces a consistent breakdown", () => {
     const l = parseListing(fixture("a6.html"), "https://www.nettiauto.com/audi/a6/15911646");

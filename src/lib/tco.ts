@@ -18,10 +18,14 @@ export interface Assumptions {
   /** Annual depreciation as a fraction of current value. */
   depreciationRate: number;
   inspectionCost: number;
-  /** Financed amount in EUR; 0 means cash purchase. */
-  loanAmount: number;
+  /** "cash": paid as a lump sum. "loan": down payment from own funds, the rest financed. */
+  financing: "cash" | "loan";
+  /** Own equity put in up front when financing, EUR. */
+  downPayment: number;
   loanInterestRate: number; // annual, e.g. 0.059
   loanTermYears: number;
+  /** Expected annual return on money left invested instead (e.g. stock market, after tax). */
+  expectedReturn: number;
 }
 
 /** Overrides the user can apply to values parsed from the listing. */
@@ -65,9 +69,11 @@ export function defaultAssumptions(powertrain: Powertrain): Assumptions {
     maintenancePerKm: ev ? 0.03 : powertrain.startsWith("hybrid") || powertrain.startsWith("phev") ? 0.045 : 0.05,
     depreciationRate: ev ? 0.14 : 0.11,
     inspectionCost: 60,
-    loanAmount: 0,
+    financing: "cash",
+    downPayment: 5000,
     loanInterestRate: 0.059,
     loanTermYears: 5,
+    expectedReturn: 0.06,
   };
 }
 
@@ -87,7 +93,7 @@ export function carInputsFromListing(l: Listing): CarInputs {
 }
 
 export interface CostLine {
-  key: "depreciation" | "energy" | "tax" | "insurance" | "maintenance" | "inspections" | "interest";
+  key: "depreciation" | "energy" | "tax" | "insurance" | "maintenance" | "inspections" | "interest" | "opportunity";
   label: string;
   total: number;
 }
@@ -101,6 +107,7 @@ export interface TcoResult {
   residualValue: number;
   tax: TaxResult;
   energyPerYear: number;
+  financing: FinancingResult;
 }
 
 /** Car age in years at the start of ownership. */
@@ -154,20 +161,68 @@ export function energyCostPerYear(car: CarInputs, a: Assumptions): number {
   }
 }
 
-/** Interest paid during the first `months` of an annuity loan. */
-export function loanInterest(principal: number, annualRate: number, termYears: number, months: number): number {
-  if (principal <= 0 || termYears <= 0) return 0;
-  const n = Math.round(termYears * 12);
+export interface FinancingResult {
+  /** Own money put into the car up front. */
+  equity: number;
+  loanAmount: number;
+  monthlyPayment: number;
+  /** Interest paid during the ownership period. */
+  interest: number;
+  /** Investment return forgone on own money tied up in the car during the ownership period. */
+  opportunityCost: number;
+  /** Loan still outstanding when the car is sold (paid off from the sale). */
+  remainingBalance: number;
+}
+
+/** Monthly payment of an annuity loan. */
+export function annuityPayment(principal: number, annualRate: number, termYears: number): number {
+  const n = Math.max(1, Math.round(termYears * 12));
   const r = annualRate / 12;
-  const payment = r === 0 ? principal / n : (principal * r) / (1 - Math.pow(1 + r, -n));
-  let balance = principal;
+  return r === 0 ? principal / n : (principal * r) / (1 - Math.pow(1 + r, -n));
+}
+
+/**
+ * Simulates the ownership period month by month.
+ *
+ * Opportunity cost: every euro of own money in the car (the lump sum, or the down payment plus
+ * loan principal as it is repaid) could otherwise have been invested at `expectedReturn`. We
+ * track what that money would have grown to; the growth is the opportunity cost. The car's
+ * loss in value is already counted as depreciation, so only the forgone return is added here.
+ */
+export function financingCosts(price: number, a: Assumptions, months: number): FinancingResult {
+  const loan = a.financing === "loan";
+  const equity = loan ? Math.min(Math.max(0, a.downPayment), price) : price;
+  const loanAmount = loan ? price - equity : 0;
+  const n = Math.max(1, Math.round(a.loanTermYears * 12));
+  const rLoan = a.loanInterestRate / 12;
+  const rInvest = Math.pow(1 + a.expectedReturn, 1 / 12) - 1;
+  const payment = loanAmount > 0 ? annuityPayment(loanAmount, a.loanInterestRate, a.loanTermYears) : 0;
+
+  let balance = loanAmount;
   let interest = 0;
-  for (let i = 0; i < Math.min(n, months); i++) {
-    const it = balance * r;
-    interest += it;
-    balance -= payment - it;
+  let contributed = equity;
+  let invested = equity; // what our own contributions would be worth if invested instead
+
+  for (let m = 0; m < months; m++) {
+    invested *= 1 + rInvest;
+    if (balance > 0 && m < n) {
+      const it = balance * rLoan;
+      const principal = Math.min(balance, payment - it);
+      interest += it;
+      balance -= principal;
+      contributed += principal;
+      invested += principal;
+    }
   }
-  return interest;
+
+  return {
+    equity,
+    loanAmount,
+    monthlyPayment: payment,
+    interest,
+    opportunityCost: invested - contributed,
+    remainingBalance: Math.max(0, balance),
+  };
 }
 
 export function computeTco(car: CarInputs, a: Assumptions, today = new Date()): TcoResult {
@@ -193,6 +248,8 @@ export function computeTco(car: CarInputs, a: Assumptions, today = new Date()): 
   const ageMultiplier = Math.min(2, 1 + 0.04 * Math.max(0, midAge - 3));
   const maintenance = km * a.maintenancePerKm * ageMultiplier;
 
+  const financing = financingCosts(car.price, a, Math.round(years * 12));
+
   const lines: CostLine[] = [
     { key: "depreciation", label: "Depreciation", total: depreciation },
     { key: "energy", label: car.powertrain === "electric" ? "Electricity" : "Fuel & charging", total: energyPerYear * years },
@@ -200,11 +257,8 @@ export function computeTco(car: CarInputs, a: Assumptions, today = new Date()): 
     { key: "insurance", label: "Insurance", total: a.insurancePerYear * years },
     { key: "maintenance", label: "Maintenance, repairs & tyres", total: maintenance },
     { key: "inspections", label: "Inspections", total: inspectionsDuring(age, years) * a.inspectionCost },
-    {
-      key: "interest",
-      label: "Loan interest",
-      total: loanInterest(Math.min(a.loanAmount, car.price), a.loanInterestRate, a.loanTermYears, Math.round(years * 12)),
-    },
+    { key: "interest", label: "Loan interest", total: financing.interest },
+    { key: "opportunity", label: "Opportunity cost (lost returns)", total: financing.opportunityCost },
   ];
 
   const total = lines.reduce((s, l) => s + l.total, 0);
@@ -217,5 +271,6 @@ export function computeTco(car: CarInputs, a: Assumptions, today = new Date()): 
     residualValue,
     tax,
     energyPerYear,
+    financing,
   };
 }

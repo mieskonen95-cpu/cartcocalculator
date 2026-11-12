@@ -34,6 +34,7 @@ const BAR_COLORS: Record<string, string> = {
   maintenance: "bg-emerald-500",
   inspections: "bg-violet-500",
   interest: "bg-slate-500",
+  opportunity: "bg-teal-500",
 };
 
 export default function Home() {
@@ -214,13 +215,6 @@ export default function Home() {
               <Num label="Ownership period" unit="years" step={0.5} value={assumptions.years} onChange={(v) => setA("years", v ?? 1)} />
               <Num label="Driving" unit="km/year" step={1000} value={assumptions.kmPerYear} onChange={(v) => setA("kmPerYear", v ?? 0)} />
               <Num label="Insurance" unit="€/year" step={50} value={assumptions.insurancePerYear} onChange={(v) => setA("insurancePerYear", v ?? 0)} />
-              <Num label="Loan amount" unit="€" step={500} value={assumptions.loanAmount} onChange={(v) => setA("loanAmount", v ?? 0)} />
-              {assumptions.loanAmount > 0 && (
-                <>
-                  <Pct label="Loan interest" value={assumptions.loanInterestRate} onChange={(v) => setA("loanInterestRate", v)} />
-                  <Num label="Loan term" unit="years" value={assumptions.loanTermYears} onChange={(v) => setA("loanTermYears", v ?? 1)} />
-                </>
-              )}
             </Card>
 
             <Card title="Prices & assumptions">
@@ -241,6 +235,54 @@ export default function Home() {
               <Num label="Real-world consumption factor" unit="×" step={0.05} value={assumptions.realWorldFactor} onChange={(v) => setA("realWorldFactor", v ?? 1)} />
               <Pct label="Depreciation per year" value={assumptions.depreciationRate} onChange={(v) => setA("depreciationRate", v)} />
               <Num label="Maintenance & repairs" unit="€/km" step={0.005} value={assumptions.maintenancePerKm} onChange={(v) => setA("maintenancePerKm", v ?? 0)} />
+
+              <div className="border-t border-zinc-100 pt-4 dark:border-zinc-800">
+                <h3 className="text-sm font-medium">Financing & opportunity cost</h3>
+                <p className="mt-0.5 text-xs text-zinc-500">
+                  Your own money in the car could otherwise earn a return in the stock market. That lost return is a cost.
+                </p>
+              </div>
+              <div className="flex items-center justify-between gap-4 text-sm">
+                <span>Payment</span>
+                <div role="radiogroup" className="flex w-48 rounded-md border border-zinc-300 p-0.5 dark:border-zinc-700">
+                  {(
+                    [
+                      ["cash", "Lump sum"],
+                      ["loan", "Financed"],
+                    ] as const
+                  ).map(([v, l]) => (
+                    <button
+                      key={v}
+                      type="button"
+                      role="radio"
+                      aria-checked={assumptions.financing === v}
+                      onClick={() => setA("financing", v)}
+                      className={`flex-1 rounded px-2 py-1 ${
+                        assumptions.financing === v ? "bg-indigo-600 text-white" : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                      }`}
+                    >
+                      {l}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {assumptions.financing === "loan" && (
+                <>
+                  <Num label="Own equity (down payment)" unit="€" step={500} value={assumptions.downPayment} onChange={(v) => setA("downPayment", v ?? 0)} />
+                  <Pct label="Loan interest" value={assumptions.loanInterestRate} onChange={(v) => setA("loanInterestRate", v)} />
+                  <Num label="Loan term" unit="years" value={assumptions.loanTermYears} onChange={(v) => setA("loanTermYears", v ?? 1)} />
+                  <p className="text-xs text-zinc-500 tabular-nums">
+                    Loan {eur(result.financing.loanAmount)} · {eur(result.financing.monthlyPayment)}/month
+                    {result.financing.remainingBalance > 1 && (
+                      <> · {eur(result.financing.remainingBalance)} still owed when sold (paid from the sale)</>
+                    )}
+                  </p>
+                </>
+              )}
+              <Pct label="Expected stock market return" value={assumptions.expectedReturn} onChange={(v) => setA("expectedReturn", v)} />
+              <p className="-mt-1 text-xs text-zinc-500">
+                Per year, after tax. Applied to the {assumptions.financing === "loan" ? "down payment and loan repayments" : "lump sum"}.
+              </p>
             </Card>
           </div>
 
