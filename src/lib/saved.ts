@@ -73,15 +73,95 @@ export function upsert(list: SavedCar[], item: SavedCar): SavedCar[] {
   return [item, ...list.filter((s) => s.id !== item.id)];
 }
 
-/** Settings that make totals incomparable when they differ between saved cars. */
-export function differingSettings(list: SavedCar[]): string[] {
+/**
+ * Settings that should match across cars for a fair comparison, grouped as the user thinks of
+ * them. Each group lists the assumption fields it covers and how to describe a value.
+ */
+interface SettingGroup {
+  label: string;
+  keys: (keyof Assumptions)[];
+  describe: (a: Assumptions) => string;
+}
+
+const nf = (n: number) => new Intl.NumberFormat("fi-FI").format(n);
+const pct = (n: number) => `${Math.round(n * 1000) / 10} %`;
+
+export const SETTING_GROUPS: SettingGroup[] = [
+  { label: "ownership period", keys: ["years"], describe: (a) => `${a.years} ${a.years === 1 ? "year" : "years"}` },
+  { label: "km per year", keys: ["kmPerYear"], describe: (a) => `${nf(a.kmPerYear)} km/year` },
+  { label: "expected return", keys: ["expectedReturn"], describe: (a) => pct(a.expectedReturn) },
+  {
+    label: "payment method",
+    keys: ["financing", "downPayment", "loanInterestRate", "loanTermYears"],
+    describe: (a) =>
+      a.financing === "cash"
+        ? "Lump sum"
+        : `Financed, ${nf(a.downPayment)} € down, ${pct(a.loanInterestRate)}, ${a.loanTermYears} y`,
+  },
+  {
+    label: "lost returns setting",
+    keys: ["opportunityMode", "opportunityOn"],
+    describe: (a) =>
+      `${a.opportunityMode === "cost" ? "Counted as cost" : "Shown in chart"}${
+        Object.values(a.opportunityOn).every(Boolean) ? "" : " (some payments off)"
+      }`,
+  },
+];
+
+/**
+ * Settings that aren't car-specific: "match all settings" copies these. Price, consumption,
+ * insurance, depreciation and maintenance rates stay with each car.
+ */
+export const SHARED_KEYS: (keyof Assumptions)[] = [
+  ...SETTING_GROUPS.flatMap((g) => g.keys),
+  "petrolPrice",
+  "dieselPrice",
+  "electricityPrice",
+  "gasPrice",
+  "realWorldFactor",
+  "phevElectricShare",
+  "inspectionCost",
+  "alreadyInvested",
+];
+
+export interface SettingDifference {
+  label: string;
+  keys: (keyof Assumptions)[];
+  /** One entry per distinct value, with the cars that use it. */
+  options: { description: string; sourceId: string; titles: string[] }[];
+}
+
+/** Setting groups whose values differ between saved cars, with the values in use. */
+export function settingDifferences(list: SavedCar[]): SettingDifference[] {
   if (list.length < 2) return [];
-  const checks: [string, (a: Assumptions) => string | number][] = [
-    ["ownership period", (a) => a.years],
-    ["km per year", (a) => a.kmPerYear],
-    ["expected return", (a) => a.expectedReturn],
-    ["payment method", (a) => a.financing],
-    ["lost returns setting", (a) => a.opportunityMode],
-  ];
-  return checks.filter(([, f]) => new Set(list.map((s) => f(s.assumptions))).size > 1).map(([label]) => label);
+  const out: SettingDifference[] = [];
+  for (const g of SETTING_GROUPS) {
+    const byValue = new Map<string, { description: string; sourceId: string; titles: string[] }>();
+    for (const s of list) {
+      const sig = JSON.stringify(g.keys.map((k) => s.assumptions[k]));
+      const entry = byValue.get(sig) ?? { description: g.describe(s.assumptions), sourceId: s.id, titles: [] };
+      entry.titles.push(s.listing.title);
+      byValue.set(sig, entry);
+    }
+    if (byValue.size > 1) out.push({ label: g.label, keys: g.keys, options: [...byValue.values()] });
+  }
+  return out;
+}
+
+/** Labels of the differing settings (kept for callers that only need the names). */
+export function differingSettings(list: SavedCar[]): string[] {
+  return settingDifferences(list).map((d) => d.label);
+}
+
+/** Copy the given settings from one saved car to all of them. */
+export function harmonize(list: SavedCar[], sourceId: string, keys: (keyof Assumptions)[]): SavedCar[] {
+  const source = list.find((s) => s.id === sourceId);
+  if (!source) return list;
+  const picked = Object.fromEntries(keys.map((k) => [k, structuredClone(source.assumptions[k])])) as Partial<Assumptions>;
+  return list.map((s) => ({ ...s, assumptions: { ...s.assumptions, ...picked } }));
+}
+
+/** Set km per year for every saved car. */
+export function setKmForAll(list: SavedCar[], kmPerYear: number): SavedCar[] {
+  return list.map((s) => ({ ...s, assumptions: { ...s.assumptions, kmPerYear } }));
 }

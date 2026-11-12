@@ -11,7 +11,7 @@ import {
   storeAlternatives,
 } from "@/lib/alternatives";
 import type { Powertrain } from "@/lib/listing";
-import { differingSettings, type SavedCar } from "@/lib/saved";
+import { harmonize, type SavedCar, setKmForAll, settingDifferences, SHARED_KEYS } from "@/lib/saved";
 import { computeTco, type CostLine } from "@/lib/tco";
 
 export const COST_COLORS: Record<CostLine["key"], string> = {
@@ -78,12 +78,17 @@ export function SavedComparison({
   currentId,
   onOpen,
   onRemove,
+  onUpdateAll,
 }: {
   saved: SavedCar[];
   currentId: string | null;
   onOpen: (s: SavedCar) => void;
   onRemove: (id: string) => void;
+  /** Replace every saved car at once (used when harmonizing settings). */
+  onUpdateAll: (list: SavedCar[]) => void;
 }) {
+  const [matchTo, setMatchTo] = useState<string>("");
+  const [kmAll, setKmAll] = useState<number | null>(null);
   const [alts, setAlts] = useState<AlternativeSettings>(DEFAULT_ALTERNATIVES);
   useEffect(() => setAlts(loadAlternatives()), []);
   const updateAlts = (next: AlternativeSettings) => {
@@ -151,7 +156,8 @@ export function SavedComparison({
 
   const cheapest = columns.length > 1 ? Math.min(...columns.map((c) => c.total)) : null;
   const maxTotal = Math.max(...columns.map((c) => c.total), 1);
-  const differing = differingSettings(saved);
+  const differences = settingDifferences(saved);
+  const shortTitle = (t: string) => (t.length > 32 ? `${t.slice(0, 30).trimEnd()}…` : t);
   const keys = Object.keys(COST_LABELS) as CostLine["key"][];
   const anyAlt = columns.some((c) => c.alternative);
   const anyRides = columns.some((c) => (c.costs.rides ?? 0) > 0);
@@ -168,11 +174,100 @@ export function SavedComparison({
       <h2 className="font-medium">Saved cars ({saved.length})</h2>
       <p className="mt-0.5 text-sm text-zinc-500">Stored in this browser on this device. Click Open to change a car&apos;s inputs.</p>
 
-      {differing.length > 0 && (
-        <p className="mt-3 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-200">
-          These cars were saved with different {differing.join(", ")}, so their totals aren&apos;t directly comparable. Open
-          a car to change its settings, then save it again.
-        </p>
+      {differences.length > 0 && (
+        <div className="mt-3 rounded-md bg-amber-50 px-3 py-3 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-200">
+          <p>
+            These cars were saved with different {differences.map((d) => d.label).join(", ")}, so their totals aren&apos;t
+            directly comparable. Pick one value to use for all:
+          </p>
+          <ul className="mt-2 space-y-2">
+            {differences.map((d) => (
+              <li key={d.label} className="flex flex-wrap items-center gap-2">
+                <span className="w-full font-medium first-letter:uppercase sm:w-40">{d.label}</span>
+                {d.options.map((o) => (
+                  <button
+                    key={o.sourceId}
+                    type="button"
+                    onClick={() => onUpdateAll(harmonize(saved, o.sourceId, d.keys))}
+                    title={`Used by: ${o.titles.join(", ")}`}
+                    className="rounded-md border border-amber-300 bg-white px-2.5 py-1 text-left hover:border-amber-500 dark:border-amber-800 dark:bg-zinc-900"
+                  >
+                    {o.description}
+                    <span className="block text-xs text-amber-800/80 dark:text-amber-300/80">
+                      {o.titles.length === 1 ? shortTitle(o.titles[0]) : `${o.titles.length} cars`}
+                    </span>
+                  </button>
+                ))}
+              </li>
+            ))}
+          </ul>
+          <form
+            className="mt-3 flex flex-wrap items-center gap-2 border-t border-amber-200 pt-3 dark:border-amber-900"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (matchTo) onUpdateAll(harmonize(saved, matchTo, SHARED_KEYS));
+            }}
+          >
+            <label htmlFor="match-to">Or match all settings to</label>
+            <select
+              id="match-to"
+              value={matchTo}
+              onChange={(e) => setMatchTo(e.target.value)}
+              className="max-w-full rounded-md border border-amber-300 bg-white px-2 py-1 dark:border-amber-800 dark:bg-zinc-900"
+            >
+              <option value="">Choose a car…</option>
+              {saved.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {shortTitle(s.listing.title)}
+                </option>
+              ))}
+            </select>
+            <button
+              disabled={!matchTo}
+              className="rounded-md bg-amber-600 px-3 py-1 font-medium text-white hover:bg-amber-700 disabled:opacity-50"
+            >
+              Apply
+            </button>
+            <span className="w-full text-xs text-amber-800/80 dark:text-amber-300/80">
+              Copies period, km, payment, expected return, lost-returns and fuel/electricity prices. Each car keeps its own
+              price, consumption, insurance, depreciation and maintenance.
+            </span>
+          </form>
+        </div>
+      )}
+
+      {saved.length > 1 && (
+        <form
+          className="mt-3 flex flex-wrap items-center gap-2 text-sm"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (kmAll && kmAll > 0) onUpdateAll(setKmForAll(saved, kmAll));
+          }}
+        >
+          <label htmlFor="km-all" className="text-zinc-500">
+            Km per year for all cars
+          </label>
+          <span className="flex items-center rounded-md border border-zinc-300 bg-white focus-within:border-indigo-500 dark:border-zinc-700 dark:bg-zinc-900">
+            <input
+              id="km-all"
+              type="number"
+              inputMode="numeric"
+              step={1000}
+              min={0}
+              placeholder={String(saved[0].assumptions.kmPerYear)}
+              value={kmAll ?? ""}
+              onChange={(e) => setKmAll(e.target.value === "" ? null : Number(e.target.value))}
+              className="w-24 bg-transparent px-2 py-1 text-right tabular-nums outline-none"
+            />
+            <span className="pr-2 text-xs text-zinc-500">km</span>
+          </span>
+          <button
+            disabled={!kmAll}
+            className="rounded-md border border-zinc-300 px-3 py-1 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+          >
+            Apply to all
+          </button>
+        </form>
       )}
 
       {/* Car-free alternatives */}

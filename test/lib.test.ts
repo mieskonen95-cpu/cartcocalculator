@@ -19,7 +19,7 @@ import {
   grownInvestment,
   type Assumptions,
 } from "../src/lib/tco";
-import { differingSettings, loadSaved, storeSaved, upsert } from "../src/lib/saved";
+import { differingSettings, harmonize, loadSaved, setKmForAll, settingDifferences, SHARED_KEYS, storeSaved, upsert } from "../src/lib/saved";
 import { estimateInsurance, isHighPower, type InsuranceInput } from "../src/lib/insurance";
 import { alternativePerYear, computeAlternative, DEFAULT_ALTERNATIVES } from "../src/lib/alternatives";
 
@@ -363,6 +363,39 @@ describe("saved cars", () => {
       "km per year",
       "payment method",
     ]);
+  });
+
+  it("lists the values in use for each differing setting", () => {
+    const list = [mk("a"), mk("b", { kmPerYear: 20000 }), mk("c", { kmPerYear: 20000, financing: "loan" })];
+    const diffs = settingDifferences(list);
+    expect(diffs.map((d) => d.label)).toEqual(["km per year", "payment method"]);
+    const km = diffs[0];
+    const sp = (t: string) => t.replace(/[\u00a0\u202f]/g, " ");
+    expect(km.options.map((o) => [sp(o.description), o.titles.length])).toEqual([
+      ["15 000 km/year", 1],
+      ["20 000 km/year", 2],
+    ]);
+    expect(sp(diffs[1].options[1].description)).toBe("Financed, 5 000 € down, 5.9 %, 5 y");
+  });
+
+  it("harmonizes one setting group from a chosen car", () => {
+    const list = [mk("a"), mk("b", { kmPerYear: 20000, financing: "loan", downPayment: 8000, loanTermYears: 4 })];
+    const km = harmonize(list, "b", ["kmPerYear"]);
+    expect(km.map((s) => s.assumptions.kmPerYear)).toEqual([20000, 20000]);
+    expect(km[0].assumptions.financing).toBe("cash"); // other settings untouched
+    const pay = harmonize(list, "b", settingDifferences(list)[1].keys);
+    expect(pay[0].assumptions).toMatchObject({ financing: "loan", downPayment: 8000, loanTermYears: 4 });
+    expect(settingDifferences(harmonize(list, "a", SHARED_KEYS))).toEqual([]);
+  });
+
+  it("match-all keeps car-specific rates", () => {
+    const ev = mk("ev", { depreciationRate: 0.14, maintenancePerKm: 0.03, kmPerYear: 25000 });
+    const [, after] = harmonize([mk("a"), ev], "a", SHARED_KEYS);
+    expect(after.assumptions).toMatchObject({ kmPerYear: 15000, depreciationRate: 0.14, maintenancePerKm: 0.03 });
+  });
+
+  it("sets km per year for every car", () => {
+    expect(setKmForAll([mk("a"), mk("b", { kmPerYear: 9000 })], 20000).map((s) => s.assumptions.kmPerYear)).toEqual([20000, 20000]);
   });
 
   it("round-trips through storage and upgrades old saves", () => {

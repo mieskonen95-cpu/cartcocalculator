@@ -745,7 +745,19 @@ export default function Home() {
 
       {saved.length > 0 && (
         <div id="saved" className="scroll-mt-6">
-          <SavedComparison saved={saved} currentId={listing ? savedId : null} onOpen={openSaved} onRemove={removeSaved} />
+          <SavedComparison
+            saved={saved}
+            currentId={listing ? savedId : null}
+            onOpen={openSaved}
+            onRemove={removeSaved}
+            onUpdateAll={(list) => {
+              persist(list);
+              // Keep the calculator in step if the car open above was changed.
+              const open = savedId ? list.find((x) => x.id === savedId) : undefined;
+              if (open && listing) setAssumptions(open.assumptions);
+              setSaveMsg(null);
+            }}
+          />
         </div>
       )}
 
