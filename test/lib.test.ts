@@ -20,6 +20,7 @@ import {
 } from "../src/lib/tco";
 import { differingSettings, loadSaved, storeSaved, upsert } from "../src/lib/saved";
 import { estimateInsurance, isHighPower, type InsuranceInput } from "../src/lib/insurance";
+import { alternativePerYear, computeAlternative, DEFAULT_ALTERNATIVES } from "../src/lib/alternatives";
 
 const fixture = (name: string) => readFileSync(join(__dirname, "fixtures", name), "utf8");
 
@@ -435,5 +436,31 @@ describe("insurance estimate", () => {
     expect(custom.car).toMatchObject({ insuranceOverride: 850, powerKw: 150, curbMassKg: 1845 });
     expect(dflt.car.insuranceOverride).toBeNull();
     expect("insurancePerYear" in custom.assumptions).toBe(false);
+  });
+});
+
+describe("car-free alternatives", () => {
+  const a = { ...defaultAssumptions("petrol"), years: 3, kmPerYear: 15000, expectedReturn: 0.06 };
+
+  it("prices a 30-day season ticket and a monthly bike budget per year", () => {
+    expect(alternativePerYear("transit", DEFAULT_ALTERNATIVES)).toBeCloseTo((110.4 * 365) / 30, 6); // ≈ 1 343
+    expect(alternativePerYear("bike", DEFAULT_ALTERNATIVES)).toBe(600);
+  });
+
+  it("adds lost returns on the monthly payments, like a car's running costs", () => {
+    const t = computeAlternative("transit", DEFAULT_ALTERNATIVES, a);
+    expect(t.spend).toBeCloseTo(3 * (110.4 * 365) / 30, 6);
+    expect(t.lostReturns).toBeGreaterThan(0);
+    expect(t.lostReturns).toBeLessThan(t.spend * (1.06 ** 3 - 1)); // paid monthly, not up front
+    expect(t.total).toBeCloseTo(t.spend + t.lostReturns, 6);
+    expect(t.perKm).toBeCloseTo(t.total / 45000, 9);
+  });
+
+  it("follows the lost-returns settings", () => {
+    const off = computeAlternative("bike", DEFAULT_ALTERNATIVES, { ...a, opportunityOn: { ...a.opportunityOn, running: false } });
+    expect(off.lostReturns).toBe(0);
+    const chart = computeAlternative("bike", DEFAULT_ALTERNATIVES, { ...a, opportunityMode: "chart" });
+    expect(chart.lostReturns).toBeGreaterThan(0);
+    expect(chart.total).toBe(chart.spend);
   });
 });

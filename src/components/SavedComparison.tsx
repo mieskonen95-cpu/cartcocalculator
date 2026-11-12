@@ -1,6 +1,15 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
+import {
+  ALTERNATIVE_LABELS,
+  type AlternativeKind,
+  type AlternativeSettings,
+  computeAlternative,
+  DEFAULT_ALTERNATIVES,
+  loadAlternatives,
+  storeAlternatives,
+} from "@/lib/alternatives";
 import type { Powertrain } from "@/lib/listing";
 import { differingSettings, type SavedCar } from "@/lib/saved";
 import { computeTco, type CostLine } from "@/lib/tco";
@@ -15,6 +24,8 @@ export const COST_COLORS: Record<CostLine["key"], string> = {
   interest: "bg-slate-500",
   opportunity: "bg-teal-500",
 };
+/** Ticket or bike costs, the alternatives' only spend. */
+const TRANSPORT_COLOR = "bg-lime-600";
 
 const COST_LABELS: Record<CostLine["key"], string> = {
   depreciation: "Depreciation",
@@ -43,6 +54,22 @@ const eur = (n: number, digits = 0) =>
   new Intl.NumberFormat("fi-FI", { style: "currency", currency: "EUR", maximumFractionDigits: digits, minimumFractionDigits: digits }).format(n);
 const int = (n: number) => new Intl.NumberFormat("fi-FI").format(Math.round(n));
 
+/** One column of the comparison: a saved car or a car-free alternative. */
+interface Column {
+  id: string;
+  title: string;
+  alternative: boolean;
+  total: number;
+  perMonth: number;
+  perKm: number;
+  /** Bar segments and table rows. `transport` is the alternatives' ticket/bike spend. */
+  costs: Partial<Record<CostLine["key"] | "transport", number>>;
+  info: { price: string; type: string; yearKm: string; ownership: string; payment: string };
+  insuranceEstimated?: boolean;
+  insuranceHighPower?: boolean;
+  saved?: SavedCar;
+}
+
 export function SavedComparison({
   saved,
   currentId,
@@ -54,12 +81,74 @@ export function SavedComparison({
   onOpen: (s: SavedCar) => void;
   onRemove: (id: string) => void;
 }) {
-  const rows = useMemo(() => saved.map((s) => ({ s, r: computeTco(s.car, s.assumptions) })), [saved]);
-  const cheapest = rows.length > 1 ? Math.min(...rows.map((x) => x.r.total)) : null;
-  const maxTotal = Math.max(...rows.map((x) => x.r.total), 1);
+  const [alts, setAlts] = useState<AlternativeSettings>(DEFAULT_ALTERNATIVES);
+  useEffect(() => setAlts(loadAlternatives()), []);
+  const updateAlts = (next: AlternativeSettings) => {
+    setAlts(next);
+    storeAlternatives(next);
+  };
+
+  // Alternatives use the period and km of the most recently saved car.
+  const reference = saved[0]?.assumptions;
+
+  const columns: Column[] = useMemo(() => {
+    const cars: Column[] = saved.map((s) => {
+      const r = computeTco(s.car, s.assumptions);
+      return {
+        id: s.id,
+        title: s.listing.title,
+        alternative: false,
+        total: r.total,
+        perMonth: r.perMonth,
+        perKm: r.perKm,
+        costs: Object.fromEntries(r.lines.map((l) => [l.key, l.total])),
+        info: {
+          price: eur(s.car.price),
+          type: POWERTRAIN_SHORT[s.car.powertrain],
+          yearKm: [s.car.modelYear, s.listing.mileageKm !== null && `${int(s.listing.mileageKm)} km`].filter(Boolean).join(" · ") || "—",
+          ownership: `${s.assumptions.years} y · ${int(s.assumptions.kmPerYear)} km/y`,
+          payment: s.assumptions.financing === "loan" ? `Financed, ${eur(r.financing.equity)} down` : "Lump sum",
+        },
+        insuranceEstimated: !r.insurance.fromQuote,
+        insuranceHighPower: r.insurance.insuranceClass === "high-power",
+        saved: s,
+      };
+    });
+    if (!reference) return cars;
+    const alternatives: Column[] = (["transit", "bike"] as AlternativeKind[])
+      .filter((k) => alts[k].on)
+      .map((k) => {
+        const r = computeAlternative(k, alts, reference);
+        return {
+          id: `alt-${k}`,
+          title: ALTERNATIVE_LABELS[k].title,
+          alternative: true,
+          total: r.total,
+          perMonth: r.perMonth,
+          perKm: r.perKm,
+          costs: { transport: r.spend, ...(reference.opportunityMode === "cost" ? { opportunity: r.lostReturns } : {}) },
+          info: {
+            price: "—",
+            type: ALTERNATIVE_LABELS[k].detail,
+            yearKm: "—",
+            ownership: `${reference.years} y · ${int(reference.kmPerYear)} km/y`,
+            payment: k === "transit" ? `${eur(alts.transit.pricePer30Days, 2)} / 30 days` : `${eur(alts.bike.perMonth)} / month`,
+          },
+        };
+      });
+    return [...cars, ...alternatives];
+  }, [saved, alts, reference]);
+
+  const cheapest = columns.length > 1 ? Math.min(...columns.map((c) => c.total)) : null;
+  const maxTotal = Math.max(...columns.map((c) => c.total), 1);
   const differing = differingSettings(saved);
   const keys = Object.keys(COST_LABELS) as CostLine["key"][];
-  const line = (r: (typeof rows)[number]["r"], k: CostLine["key"]) => r.lines.find((l) => l.key === k)?.total ?? 0;
+  const anyAlt = columns.some((c) => c.alternative);
+  const segments: [CostLine["key"] | "transport", string][] = [
+    ...(anyAlt ? [["transport", TRANSPORT_COLOR] as [ "transport", string]] : []),
+    ...keys.map((k) => [k, COST_COLORS[k]] as [CostLine["key"], string]),
+  ];
+  const segmentLabel = (k: CostLine["key"] | "transport") => (k === "transport" ? "Ticket / bike" : COST_LABELS[k]);
 
   return (
     <section className="mt-10 min-w-0 rounded-xl border border-zinc-200 p-5 dark:border-zinc-800">
@@ -73,46 +162,97 @@ export function SavedComparison({
         </p>
       )}
 
-      {/* Stacked cost bars: one per car, same scale. */}
+      {/* Car-free alternatives */}
+      <fieldset className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
+        <legend className="sr-only">Compare with</legend>
+        <span className="text-zinc-500">Compare with:</span>
+        <label className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={alts.transit.on}
+            onChange={(e) => updateAlts({ ...alts, transit: { ...alts.transit, on: e.target.checked } })}
+            className="h-4 w-4 accent-indigo-600"
+          />
+          Public transport
+          <MiniNum
+            value={alts.transit.pricePer30Days}
+            step={0.1}
+            unit="€ / 30 days"
+            label="Season ticket price per 30 days"
+            onChange={(v) => updateAlts({ ...alts, transit: { ...alts.transit, pricePer30Days: v } })}
+          />
+        </label>
+        <label className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={alts.bike.on}
+            onChange={(e) => updateAlts({ ...alts, bike: { ...alts.bike, on: e.target.checked } })}
+            className="h-4 w-4 accent-indigo-600"
+          />
+          Cycling
+          <MiniNum
+            value={alts.bike.perMonth}
+            step={5}
+            unit="€ / month"
+            label="Cycling cost per month"
+            onChange={(v) => updateAlts({ ...alts, bike: { ...alts.bike, perMonth: v } })}
+          />
+        </label>
+      </fieldset>
+      {anyAlt && reference && (
+        <p className="mt-1 text-xs text-zinc-500">
+          Over {reference.years} years (same as the most recently saved car), with lost returns on the monthly payments like a
+          car&apos;s running costs.
+        </p>
+      )}
+
+      {/* Stacked cost bars: one per option, same scale. */}
       <ul className="mt-5 space-y-3">
-        {rows.map(({ s, r }) => (
-          <li key={s.id}>
+        {columns.map((c) => (
+          <li key={c.id}>
             <div className="flex items-baseline justify-between gap-3 text-sm">
-              <span className="min-w-0 truncate">{s.listing.title}</span>
+              <span className={`min-w-0 truncate ${c.alternative ? "italic" : ""}`}>{c.title}</span>
               <span className="shrink-0 tabular-nums">
-                {r.total === cheapest && <span className="mr-2 text-xs font-medium text-emerald-700 dark:text-emerald-400">Cheapest</span>}
-                <strong>{eur(r.total)}</strong>
+                {c.total === cheapest && <span className="mr-2 text-xs font-medium text-emerald-700 dark:text-emerald-400">Cheapest</span>}
+                <strong>{eur(c.total)}</strong>
               </span>
             </div>
-            <div className="mt-1 flex h-3 gap-[2px] overflow-hidden rounded-full bg-zinc-100 dark:bg-zinc-800" style={{ width: `${(100 * r.total) / maxTotal}%` }}>
-              {r.lines.map((l) =>
-                l.total > 0 ? (
-                  <div key={l.key} title={`${COST_LABELS[l.key]}: ${eur(l.total)}`} className={COST_COLORS[l.key]} style={{ width: `${(100 * l.total) / r.total}%` }} />
-                ) : null,
-              )}
+            <div className="mt-1 flex h-3 gap-[2px] overflow-hidden rounded-full bg-zinc-100 dark:bg-zinc-800" style={{ width: `${(100 * c.total) / maxTotal}%` }}>
+              {segments.map(([k, color]) => {
+                const v = c.costs[k] ?? 0;
+                return v > 0 ? <div key={k} title={`${segmentLabel(k)}: ${eur(v)}`} className={color} style={{ width: `${(100 * v) / c.total}%` }} /> : null;
+              })}
             </div>
           </li>
         ))}
       </ul>
       <ul className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-600 dark:text-zinc-400">
-        {keys.map((k) => (
+        {segments.map(([k, color]) => (
           <li key={k} className="flex items-center gap-1.5">
-            <span className={`h-2.5 w-2.5 rounded-full ${COST_COLORS[k]}`} />
-            {COST_LABELS[k]}
+            <span className={`h-2.5 w-2.5 rounded-full ${color}`} />
+            {segmentLabel(k)}
           </li>
         ))}
       </ul>
 
-      {/* Side-by-side table; scrolls sideways when there are many cars. */}
+      {/* Side-by-side table; scrolls sideways when there are many options. */}
       <div className="mt-6 overflow-x-auto">
         <table className="w-full border-separate border-spacing-0 text-sm tabular-nums">
           <thead>
             <tr>
               <th className="sticky left-0 z-10 bg-[var(--background)] py-2 pr-3" />
-              {rows.map(({ s }) => (
-                <th key={s.id} className="min-w-36 border-b border-zinc-200 px-3 py-2 text-left align-top font-medium dark:border-zinc-800">
-                  <span className="line-clamp-3">{s.listing.title}</span>
-                  {s.id === currentId && <span className="mt-1 block text-xs font-normal text-indigo-600 dark:text-indigo-400">Open above</span>}
+              {columns.map((c) => (
+                <th
+                  key={c.id}
+                  className={`min-w-36 border-b border-zinc-200 px-3 py-2 text-left align-top font-medium dark:border-zinc-800 ${
+                    c.alternative ? "bg-zinc-50 dark:bg-zinc-900" : ""
+                  }`}
+                >
+                  <span className="line-clamp-3">{c.title}</span>
+                  {c.alternative && <span className="mt-1 block text-xs font-normal text-zinc-500">No car</span>}
+                  {c.saved && c.id === currentId && (
+                    <span className="mt-1 block text-xs font-normal text-indigo-600 dark:text-indigo-400">Open above</span>
+                  )}
                 </th>
               ))}
             </tr>
@@ -120,78 +260,86 @@ export function SavedComparison({
           <tbody>
             {(
               [
-                ["Price", (x) => eur(x.s.car.price)],
-                ["Type", (x) => POWERTRAIN_SHORT[x.s.car.powertrain]],
-                ["Year · km", (x) => [x.s.car.modelYear, x.s.listing.mileageKm !== null && `${int(x.s.listing.mileageKm)} km`].filter(Boolean).join(" · ") || "—"],
-                ["Ownership", (x) => `${x.s.assumptions.years} y · ${int(x.s.assumptions.kmPerYear)} km/y`],
-                ["Payment", (x) => (x.s.assumptions.financing === "loan" ? `Financed, ${eur(x.r.financing.equity)} down` : "Lump sum")],
-              ] as [string, (x: (typeof rows)[number]) => string][]
+                ["Price", (c) => c.info.price],
+                ["Type", (c) => c.info.type],
+                ["Year · km", (c) => c.info.yearKm],
+                ["Period", (c) => c.info.ownership],
+                ["Payment", (c) => c.info.payment],
+              ] as [string, (c: Column) => string][]
             ).map(([label, f]) => (
               <tr key={label}>
                 <td className="sticky left-0 bg-[var(--background)] py-2 pr-3 text-zinc-500">{label}</td>
-                {rows.map((x) => (
-                  <td key={x.s.id} className="border-b border-zinc-100 px-3 py-2 dark:border-zinc-800">
-                    {f(x)}
-                  </td>
+                {columns.map((c) => (
+                  <Cell key={c.id} alt={c.alternative}>
+                    {f(c)}
+                  </Cell>
                 ))}
               </tr>
             ))}
             {(
               [
-                ["Total cost", (x) => x.r.total, true],
-                ["Per month", (x) => x.r.perMonth, false],
-                ["Per km", (x) => x.r.perKm, false],
-              ] as [string, (x: (typeof rows)[number]) => number, boolean][]
+                ["Total cost", (c) => eur(c.total), true],
+                ["Per month", (c) => eur(c.perMonth), false],
+                ["Per km", (c) => eur(c.perKm, 2), false],
+              ] as [string, (c: Column) => string, boolean][]
             ).map(([label, f, bold]) => (
               <tr key={label} className={bold ? "font-semibold" : ""}>
                 <td className="sticky left-0 bg-[var(--background)] py-2 pr-3">{label}</td>
-                {rows.map((x) => (
-                  <td key={x.s.id} className="border-b border-zinc-100 px-3 py-2 dark:border-zinc-800">
-                    {label === "Per km" ? eur(f(x), 2) : eur(f(x))}
-                    {bold && x.r.total === cheapest && (
+                {columns.map((c) => (
+                  <Cell key={c.id} alt={c.alternative}>
+                    {f(c)}
+                    {bold && c.total === cheapest && (
                       <span className="ml-1.5 text-xs font-medium text-emerald-700 dark:text-emerald-400">✓ cheapest</span>
                     )}
-                  </td>
+                  </Cell>
                 ))}
               </tr>
             ))}
-            {keys.map((k) => (
+            {segments.map(([k, color]) => (
               <tr key={k}>
                 <td className="sticky left-0 bg-[var(--background)] py-1.5 pr-3 text-zinc-500">
                   <span className="flex items-center gap-1.5">
-                    <span className={`h-2 w-2 shrink-0 rounded-full ${COST_COLORS[k]}`} />
-                    {COST_LABELS[k]}
+                    <span className={`h-2 w-2 shrink-0 rounded-full ${color}`} />
+                    {segmentLabel(k)}
                   </span>
                 </td>
-                {rows.map((x) => (
-                  <td key={x.s.id} className="border-b border-zinc-100 px-3 py-1.5 text-zinc-600 dark:border-zinc-800 dark:text-zinc-400">
-                    {k === "insurance" && !x.r.insurance.fromQuote ? "≈ " : ""}
-                    {eur(line(x.r, k))}
-                    {k === "insurance" && x.r.insurance.insuranceClass === "high-power" && !x.r.insurance.fromQuote && (
-                      <span className="ml-1 text-xs text-amber-700 dark:text-amber-400">get quote</span>
+                {columns.map((c) => (
+                  <Cell key={c.id} alt={c.alternative} muted>
+                    {c.costs[k] === undefined ? (
+                      "—"
+                    ) : (
+                      <>
+                        {k === "insurance" && c.insuranceEstimated ? "≈ " : ""}
+                        {eur(c.costs[k]!)}
+                        {k === "insurance" && c.insuranceEstimated && c.insuranceHighPower && (
+                          <span className="ml-1 text-xs text-amber-700 dark:text-amber-400">get quote</span>
+                        )}
+                      </>
                     )}
-                  </td>
+                  </Cell>
                 ))}
               </tr>
             ))}
             <tr>
               <td className="sticky left-0 bg-[var(--background)]" />
-              {rows.map(({ s }) => (
-                <td key={s.id} className="px-3 pt-3">
-                  <div className="flex gap-3">
-                    <button type="button" onClick={() => onOpen(s)} className="text-indigo-600 underline hover:text-indigo-800 dark:text-indigo-400">
-                      Open
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (confirm(`Remove ${s.listing.title} from saved cars?`)) onRemove(s.id);
-                      }}
-                      className="text-zinc-500 underline hover:text-rose-600"
-                    >
-                      Remove
-                    </button>
-                  </div>
+              {columns.map((c) => (
+                <td key={c.id} className={`px-3 pt-3 ${c.alternative ? "bg-zinc-50 dark:bg-zinc-900" : ""}`}>
+                  {c.saved && (
+                    <div className="flex gap-3">
+                      <button type="button" onClick={() => onOpen(c.saved!)} className="text-indigo-600 underline hover:text-indigo-800 dark:text-indigo-400">
+                        Open
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (confirm(`Remove ${c.title} from saved cars?`)) onRemove(c.id);
+                        }}
+                        className="text-zinc-500 underline hover:text-rose-600"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  )}
                 </td>
               ))}
             </tr>
@@ -199,5 +347,47 @@ export function SavedComparison({
         </table>
       </div>
     </section>
+  );
+}
+
+function Cell({ alt, muted, children }: { alt: boolean; muted?: boolean; children: React.ReactNode }) {
+  return (
+    <td
+      className={`border-b border-zinc-100 px-3 py-2 dark:border-zinc-800 ${alt ? "bg-zinc-50 dark:bg-zinc-900" : ""} ${
+        muted ? "py-1.5 text-zinc-600 dark:text-zinc-400" : ""
+      }`}
+    >
+      {children}
+    </td>
+  );
+}
+
+function MiniNum({
+  value,
+  step,
+  unit,
+  label,
+  onChange,
+}: {
+  value: number;
+  step: number;
+  unit: string;
+  label: string;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <span className="flex items-center rounded-md border border-zinc-300 bg-white focus-within:border-indigo-500 dark:border-zinc-700 dark:bg-zinc-900">
+      <input
+        type="number"
+        inputMode="decimal"
+        step={step}
+        min={0}
+        aria-label={label}
+        value={value}
+        onChange={(e) => onChange(Math.max(0, Number(e.target.value) || 0))}
+        className="w-20 bg-transparent px-2 py-1 text-right tabular-nums outline-none"
+      />
+      <span className="pr-2 text-xs text-zinc-500">{unit}</span>
+    </span>
   );
 }
