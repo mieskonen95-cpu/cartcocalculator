@@ -18,6 +18,7 @@ import {
   simulateOwnership,
   type Assumptions,
 } from "../src/lib/tco";
+import { differingSettings, loadSaved, storeSaved, upsert } from "../src/lib/saved";
 
 const fixture = (name: string) => readFileSync(join(__dirname, "fixtures", name), "utf8");
 
@@ -292,5 +293,53 @@ describe("parseListingText (copied page text)", () => {
     expect(t("Sähkö")).toBe("electric");
     expect(t("1,8 l, Hybridi (bensiini/sähkö)")).toBe("hybrid-petrol");
     expect(t("2,0 l, Lataushybridi (bensiini/sähkö)")).toBe("phev-petrol");
+  });
+});
+
+describe("saved cars", () => {
+  const mk = (id: string, over: Partial<Assumptions> = {}) => {
+    const l = parseListingText(fixture("a6.txt"));
+    return {
+      id,
+      savedAt: "2026-11-12T00:00:00Z",
+      listing: l,
+      car: carInputsFromListing(l),
+      assumptions: { ...defaultAssumptions(l.powertrain), ...over },
+    };
+  };
+
+  it("upserts newest first and replaces by id", () => {
+    const list = upsert(upsert([], mk("a")), mk("b"));
+    expect(list.map((s) => s.id)).toEqual(["b", "a"]);
+    expect(upsert(list, mk("a", { years: 5 })).map((s) => [s.id, s.assumptions.years])).toEqual([
+      ["a", 5],
+      ["b", 3],
+    ]);
+  });
+
+  it("flags settings that make totals incomparable", () => {
+    expect(differingSettings([mk("a"), mk("b")])).toEqual([]);
+    expect(differingSettings([mk("a"), mk("b", { kmPerYear: 25000, financing: "loan" })])).toEqual([
+      "km per year",
+      "payment method",
+    ]);
+  });
+
+  it("round-trips through storage and upgrades old saves", () => {
+    const store = new Map<string, string>();
+    const ls = {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => void store.set(k, v),
+    };
+    (globalThis as unknown as { localStorage: typeof ls }).localStorage = ls;
+    expect(loadSaved()).toEqual([]);
+    const old = mk("x") as unknown as { assumptions: Record<string, unknown> };
+    delete old.assumptions.opportunityOn; // saved before this setting existed
+    expect(storeSaved([old as never])).toBe(true);
+    const [back] = loadSaved();
+    expect(back.id).toBe("x");
+    expect(back.assumptions.opportunityOn).toEqual({ equity: true, principal: true, interest: true, running: true });
+    store.set("cartco.saved.v1", "not json");
+    expect(loadSaved()).toEqual([]);
   });
 });

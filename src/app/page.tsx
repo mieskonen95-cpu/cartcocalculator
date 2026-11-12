@@ -1,7 +1,9 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { CashflowChart } from "@/components/CashflowChart";
+import { COST_COLORS, SavedComparison } from "@/components/SavedComparison";
+import { loadSaved, newId, storeSaved, upsert, type SavedCar } from "@/lib/saved";
 import {
   looksLikeListingText,
   mergeListing,
@@ -39,16 +41,7 @@ const POWERTRAINS: [Powertrain, string][] = [
   ["other", "Other"],
 ];
 
-const BAR_COLORS: Record<string, string> = {
-  depreciation: "bg-indigo-500",
-  energy: "bg-amber-500",
-  tax: "bg-rose-500",
-  insurance: "bg-sky-500",
-  maintenance: "bg-emerald-500",
-  inspections: "bg-violet-500",
-  interest: "bg-slate-500",
-  opportunity: "bg-teal-500",
-};
+const BAR_COLORS: Record<string, string> = COST_COLORS;
 
 export default function Home() {
   const [input, setInput] = useState("");
@@ -62,7 +55,45 @@ export default function Home() {
   const [car, setCar] = useState<CarInputs | null>(null);
   const [assumptions, setAssumptions] = useState<Assumptions | null>(null);
 
+  const [saved, setSaved] = useState<SavedCar[]>([]);
+  /** Id of the saved entry currently open, so saving again updates it. */
+  const [savedId, setSavedId] = useState<string | null>(null);
+  const [saveMsg, setSaveMsg] = useState<string | null>(null);
+
+  // Read saved cars after mounting (localStorage isn't available during server rendering).
+  useEffect(() => setSaved(loadSaved()), []);
+
+  function persist(list: SavedCar[]) {
+    setSaved(list);
+    if (!storeSaved(list)) setSaveMsg("Couldn't save: this browser blocks storage (private mode?).");
+  }
+
+  function saveCurrent() {
+    if (!listing || !car || !assumptions) return;
+    const id = savedId && saved.some((x) => x.id === savedId) ? savedId : newId();
+    persist(upsert(saved, { id, savedAt: new Date().toISOString(), listing, car, assumptions }));
+    setSaveMsg(id === savedId ? "Updated" : "Saved");
+    setSavedId(id);
+    setTimeout(() => setSaveMsg(null), 2500);
+  }
+
+  function openSaved(s: SavedCar) {
+    setListing(s.listing);
+    setCar(s.car);
+    setAssumptions(s.assumptions);
+    setSavedId(s.id);
+    setError(null);
+    setNotice(null);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function removeSaved(id: string) {
+    persist(saved.filter((x) => x.id !== id));
+    if (id === savedId) setSavedId(null);
+  }
+
   function show(l: Listing) {
+    setSavedId(null);
     setListing(l);
     setCar(carInputsFromListing(l));
     setAssumptions(defaultAssumptions(l.powertrain));
@@ -456,6 +487,44 @@ export default function Home() {
                 <Stat label="per year" value={eur(result.perYear)} />
                 <Stat label="per km" value={eur(result.perKm, 2)} />
               </dl>
+              <div className="mt-5 flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={saveCurrent}
+                  className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-indigo-700 hover:bg-indigo-50"
+                >
+                  {savedId && saved.some((x) => x.id === savedId) ? "Update saved car" : "Save for comparison"}
+                </button>
+                {savedId && saved.some((x) => x.id === savedId) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSavedId(null);
+                      const id = newId();
+                      persist(upsert(saved, { id, savedAt: new Date().toISOString(), listing, car, assumptions }));
+                      setSavedId(id);
+                      setSaveMsg("Saved as a new car");
+                      setTimeout(() => setSaveMsg(null), 2500);
+                    }}
+                    className="text-sm text-indigo-100 underline hover:text-white"
+                  >
+                    Save as new
+                  </button>
+                )}
+                {saveMsg && (
+                  <span role="status" className="text-sm text-indigo-100">
+                    {saveMsg}
+                    {saved.length > 1 && !saveMsg.startsWith("Couldn") && (
+                      <>
+                        {" · "}
+                        <a href="#saved" className="underline">
+                          compare {saved.length} cars
+                        </a>
+                      </>
+                    )}
+                  </span>
+                )}
+              </div>
             </section>
 
             <section className="rounded-xl border border-zinc-200 p-5 dark:border-zinc-800">
@@ -581,6 +650,12 @@ export default function Home() {
               })()}
             </p>
           </section>
+      )}
+
+      {saved.length > 0 && (
+        <div id="saved" className="scroll-mt-6">
+          <SavedComparison saved={saved} currentId={listing ? savedId : null} onOpen={openSaved} onRemove={removeSaved} />
+        </div>
       )}
 
       <footer className="mt-16 text-xs text-zinc-500">
