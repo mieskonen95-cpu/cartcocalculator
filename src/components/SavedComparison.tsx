@@ -11,7 +11,16 @@ import {
   storeAlternatives,
 } from "@/lib/alternatives";
 import type { Powertrain } from "@/lib/listing";
-import { harmonize, type SavedCar, setKmForAll, settingDifferences, SHARED_KEYS } from "@/lib/saved";
+import {
+  BULK_FIELDS,
+  type BulkKey,
+  commonValue,
+  harmonize,
+  type SavedCar,
+  setForAll,
+  settingDifferences,
+  SHARED_KEYS,
+} from "@/lib/saved";
 import { computeTco, type CostLine } from "@/lib/tco";
 
 export const COST_COLORS: Record<CostLine["key"], string> = {
@@ -88,7 +97,7 @@ export function SavedComparison({
   onUpdateAll: (list: SavedCar[]) => void;
 }) {
   const [matchTo, setMatchTo] = useState<string>("");
-  const [kmAll, setKmAll] = useState<number | null>(null);
+  const [bulk, setBulk] = useState<Partial<Record<BulkKey, number>>>({});
   const [alts, setAlts] = useState<AlternativeSettings>(DEFAULT_ALTERNATIVES);
   useEffect(() => setAlts(loadAlternatives()), []);
   const updateAlts = (next: AlternativeSettings) => {
@@ -236,37 +245,49 @@ export function SavedComparison({
         </div>
       )}
 
-      {saved.length > 1 && (
+      {saved.length > 0 && (
         <form
-          className="mt-3 flex flex-wrap items-center gap-2 text-sm"
+          className="mt-4 rounded-md border border-zinc-200 p-3 text-sm dark:border-zinc-800"
           onSubmit={(e) => {
             e.preventDefault();
-            if (kmAll && kmAll > 0) onUpdateAll(setKmForAll(saved, kmAll));
+            onUpdateAll(setForAll(saved, bulk));
+            setBulk({});
           }}
         >
-          <label htmlFor="km-all" className="text-zinc-500">
-            Km per year for all cars
-          </label>
-          <span className="flex items-center rounded-md border border-zinc-300 bg-white focus-within:border-indigo-500 dark:border-zinc-700 dark:bg-zinc-900">
-            <input
-              id="km-all"
-              type="number"
-              inputMode="numeric"
-              step={1000}
-              min={0}
-              placeholder={String(saved[0].assumptions.kmPerYear)}
-              value={kmAll ?? ""}
-              onChange={(e) => setKmAll(e.target.value === "" ? null : Number(e.target.value))}
-              className="w-24 bg-transparent px-2 py-1 text-right tabular-nums outline-none"
-            />
-            <span className="pr-2 text-xs text-zinc-500">km</span>
-          </span>
-          <button
-            disabled={!kmAll}
-            className="rounded-md border border-zinc-300 px-3 py-1 hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
-          >
-            Apply to all
-          </button>
+          <p className="font-medium">Settings for all cars</p>
+          <p className="text-xs text-zinc-500">Fill in what you want to change; empty fields stay as they are.</p>
+          <div className="mt-2 flex flex-wrap items-end gap-3">
+            {BULK_FIELDS.map((f) => {
+              const common = commonValue(saved, f.key);
+              return (
+                <label key={f.key} className="flex flex-col gap-1">
+                  <span className="text-xs text-zinc-500">{f.label}</span>
+                  <span className="flex items-center rounded-md border border-zinc-300 bg-white focus-within:border-indigo-500 dark:border-zinc-700 dark:bg-zinc-900">
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      step={f.step}
+                      min={0}
+                      aria-label={`${f.label} for all cars`}
+                      placeholder={common === null ? "mixed" : String(common)}
+                      value={bulk[f.key] ?? ""}
+                      onChange={(e) =>
+                        setBulk((b) => ({ ...b, [f.key]: e.target.value === "" ? undefined : Number(e.target.value) }))
+                      }
+                      className="w-20 bg-transparent px-2 py-1 text-right tabular-nums outline-none"
+                    />
+                    <span className="pr-2 text-xs text-zinc-500">{f.unit}</span>
+                  </span>
+                </label>
+              );
+            })}
+            <button
+              disabled={!Object.values(bulk).some((v) => v !== undefined && v > 0)}
+              className="rounded-md bg-indigo-600 px-3 py-1.5 font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+            >
+              Apply to all
+            </button>
+          </div>
         </form>
       )}
 

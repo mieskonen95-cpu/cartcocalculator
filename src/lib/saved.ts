@@ -161,7 +161,25 @@ export function harmonize(list: SavedCar[], sourceId: string, keys: (keyof Assum
   return list.map((s) => ({ ...s, assumptions: { ...s.assumptions, ...picked } }));
 }
 
-/** Set km per year for every saved car. */
-export function setKmForAll(list: SavedCar[], kmPerYear: number): SavedCar[] {
-  return list.map((s) => ({ ...s, assumptions: { ...s.assumptions, kmPerYear } }));
+/** Settings editable for all saved cars at once. */
+export const BULK_FIELDS = [
+  { key: "years", label: "Period", unit: "years", step: 0.5 },
+  { key: "kmPerYear", label: "Driving", unit: "km/year", step: 1000 },
+  { key: "petrolPrice", label: "Petrol", unit: "€/l", step: 0.01 },
+  { key: "dieselPrice", label: "Diesel", unit: "€/l", step: 0.01 },
+  { key: "electricityPrice", label: "Electricity", unit: "€/kWh", step: 0.01 },
+] as const;
+
+export type BulkKey = (typeof BULK_FIELDS)[number]["key"];
+
+/** Set the given settings on every saved car; other settings are left alone. */
+export function setForAll(list: SavedCar[], patch: Partial<Pick<Assumptions, BulkKey>>): SavedCar[] {
+  const clean = Object.fromEntries(Object.entries(patch).filter(([, v]) => typeof v === "number" && v > 0));
+  return list.map((s) => ({ ...s, assumptions: { ...s.assumptions, ...clean } }));
+}
+
+/** The shared value of a setting across saved cars, or null when they differ. */
+export function commonValue(list: SavedCar[], key: BulkKey): number | null {
+  const values = new Set(list.map((s) => s.assumptions[key]));
+  return values.size === 1 ? [...values][0] : null;
 }

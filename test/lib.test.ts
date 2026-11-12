@@ -19,7 +19,7 @@ import {
   grownInvestment,
   type Assumptions,
 } from "../src/lib/tco";
-import { differingSettings, harmonize, loadSaved, setKmForAll, settingDifferences, SHARED_KEYS, storeSaved, upsert } from "../src/lib/saved";
+import { commonValue, differingSettings, harmonize, loadSaved, setForAll, settingDifferences, SHARED_KEYS, storeSaved, upsert } from "../src/lib/saved";
 import { estimateInsurance, isHighPower, type InsuranceInput } from "../src/lib/insurance";
 import { alternativePerYear, computeAlternative, DEFAULT_ALTERNATIVES } from "../src/lib/alternatives";
 
@@ -394,8 +394,17 @@ describe("saved cars", () => {
     expect(after.assumptions).toMatchObject({ kmPerYear: 15000, depreciationRate: 0.14, maintenancePerKm: 0.03 });
   });
 
-  it("sets km per year for every car", () => {
-    expect(setKmForAll([mk("a"), mk("b", { kmPerYear: 9000 })], 20000).map((s) => s.assumptions.kmPerYear)).toEqual([20000, 20000]);
+  it("sets period, km and energy prices for every car, ignoring empty fields", () => {
+    const list = [mk("a"), mk("b", { kmPerYear: 9000, years: 5, electricityPrice: 0.25 })];
+    expect(commonValue(list, "kmPerYear")).toBeNull();
+    expect(commonValue(list, "petrolPrice")).toBe(1.85);
+    const out = setForAll(list, { years: 4, kmPerYear: 20000, petrolPrice: 1.95, electricityPrice: undefined });
+    expect(out.map((s) => [s.assumptions.years, s.assumptions.kmPerYear, s.assumptions.petrolPrice])).toEqual([
+      [4, 20000, 1.95],
+      [4, 20000, 1.95],
+    ]);
+    expect(out[1].assumptions.electricityPrice).toBe(0.25); // left alone
+    expect(settingDifferences(out).map((d) => d.label)).not.toContain("km per year");
   });
 
   it("round-trips through storage and upgrades old saves", () => {
