@@ -21,6 +21,12 @@ npm test        # unit tests (vitest), using saved listing pages in test/fixture
 npm run lint
 ```
 
+## Hosting on Render
+
+`render.yaml` sets up a free Render web service. In Render: **New → Blueprint**,
+connect this GitHub repo, pick the `main` branch, and apply. Render then redeploys on
+every push. The free tier sleeps when idle, so the first request after a break is slow.
+
 ## Known limitations
 
 - **Vehicle tax:** EV basic tax and driving-power tax rates are the official 2026 figures. The
