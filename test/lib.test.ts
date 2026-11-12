@@ -19,6 +19,7 @@ import {
   type Assumptions,
 } from "../src/lib/tco";
 import { differingSettings, loadSaved, storeSaved, upsert } from "../src/lib/saved";
+import { estimateInsurance, isHighPower, type InsuranceInput } from "../src/lib/insurance";
 
 const fixture = (name: string) => readFileSync(join(__dirname, "fixtures", name), "utf8");
 
@@ -341,5 +342,69 @@ describe("saved cars", () => {
     expect(back.assumptions.opportunityOn).toEqual({ equity: true, principal: true, interest: true, running: true });
     store.set("cartco.saved.v1", "not json");
     expect(loadSaved()).toEqual([]);
+  });
+});
+
+describe("insurance estimate", () => {
+  const est = (o: Partial<InsuranceInput>) =>
+    estimateInsurance({ price: 15000, powertrain: "petrol", powerKw: 100, curbMassKg: 1300, totalMassKg: null, ...o });
+
+  it("reproduces the Fennia full-cover quotes within 5 %", () => {
+    // Typical specs for these models; the quotes themselves were for specific listings.
+    const quotes: [Partial<InsuranceInput>, number][] = [
+      [{ price: 6000, powertrain: "petrol", powerKw: 74, curbMassKg: 1250 }, 560], // Ford Focus
+      [{ price: 17000, powertrain: "petrol", powerKw: 92, curbMassKg: 1300 }, 593], // Ford Focus
+      [{ price: 15880, powertrain: "diesel", powerKw: 110, curbMassKg: 1550 }, 868.62], // VW Passat
+      [{ price: 18390, powertrain: "diesel", powerKw: 140, curbMassKg: 1850 }, 906.11], // Volvo XC60
+      [{ price: 19990, powertrain: "electric", powerKw: 211, curbMassKg: 1750 }, 1205.33], // Tesla Model 3
+    ];
+    for (const [car, quote] of quotes) {
+      const e = est(car).perYear;
+      expect(Math.abs(e - quote) / quote, `${JSON.stringify(car)} → ${e} vs ${quote}`).toBeLessThan(0.05);
+    }
+  });
+
+  it("uses a high placeholder for cars too powerful to quote online", () => {
+    expect(est({ powerKw: 220 })).toMatchObject({ perYear: 2411, insuranceClass: "high-power" });
+    expect(est({ powertrain: "electric", powerKw: 220 }).insuranceClass).toBe("electric"); // EVs quote fine
+    expect(est({ powertrain: "electric", powerKw: 258 }).insuranceClass).toBe("electric"); // Model Y Long Range
+    expect(est({ powertrain: "electric", powerKw: 340 }).insuranceClass).toBe("high-power"); // Performance
+    expect(isHighPower("petrol", null)).toBe(false);
+  });
+
+  it("falls back to total mass, then to a middle factor", () => {
+    expect(est({ curbMassKg: null, totalMassKg: 2200 }).insuranceClass).toBe("large"); // 1 700 kg curb
+    expect(est({ curbMassKg: null, totalMassKg: null }).insuranceClass).toBe("unknown-size");
+  });
+
+  it("lets the user's quote override the estimate in the TCO", () => {
+    const l = parseListingText(fixture("a6.txt"));
+    const car = carInputsFromListing(l);
+    const a = defaultAssumptions(l.powertrain);
+    const estimated = computeTco(car, a, new Date("2026-11-12"));
+    expect(estimated.insurance.fromQuote).toBe(false);
+    const quoted = computeTco({ ...car, insuranceOverride: 700 }, a, new Date("2026-11-12"));
+    expect(quoted.insurance).toMatchObject({ used: 700, fromQuote: true });
+    expect(quoted.lines.find((x) => x.key === "insurance")!.total).toBe(2100);
+  });
+
+  it("keeps a customised old global insurance setting as the car's quote", () => {
+    const store = new Map<string, string>();
+    (globalThis as unknown as { localStorage: unknown }).localStorage = {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => void store.set(k, v),
+    };
+    const l = parseListingText(fixture("a6.txt"));
+    // A car saved before power, curb mass and insurance quotes were part of the inputs.
+    const oldCar: Record<string, unknown> = { ...carInputsFromListing(l) };
+    for (const k of ["powerKw", "curbMassKg", "insuranceOverride"]) delete oldCar[k];
+    const mk = (id: string, insurancePerYear: number) => ({
+      id, savedAt: "", listing: l, car: oldCar, assumptions: { ...defaultAssumptions(l.powertrain), insurancePerYear },
+    });
+    store.set("cartco.saved.v1", JSON.stringify([mk("custom", 850), mk("default", 600)]));
+    const [custom, dflt] = loadSaved();
+    expect(custom.car).toMatchObject({ insuranceOverride: 850, powerKw: 150, curbMassKg: 1845 });
+    expect(dflt.car.insuranceOverride).toBeNull();
+    expect("insurancePerYear" in custom.assumptions).toBe(false);
   });
 });

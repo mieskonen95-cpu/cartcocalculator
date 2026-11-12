@@ -20,13 +20,25 @@ const KEY = "cartco.saved.v1";
 /** Fill in fields added after a car was saved, so old saves keep working. */
 function upgrade(s: SavedCar): SavedCar {
   const defaults = defaultAssumptions(s.car.powertrain);
+  // Insurance used to be one setting for all cars (default 600). A changed value was the
+  // user's own figure, so keep it as this car's quote.
+  const { insurancePerYear: legacyInsurance, ...assumptions } = (s.assumptions ?? {}) as Assumptions & {
+    insurancePerYear?: number;
+  };
   return {
     ...s,
-    car: { ...s.car, vehicleTaxOverride: s.car.vehicleTaxOverride ?? null },
+    car: {
+      ...s.car,
+      vehicleTaxOverride: s.car.vehicleTaxOverride ?? null,
+      powerKw: s.car.powerKw ?? s.listing.powerKw ?? null,
+      curbMassKg: s.car.curbMassKg ?? s.listing.curbMassKg ?? null,
+      insuranceOverride:
+        s.car.insuranceOverride ?? (legacyInsurance !== undefined && legacyInsurance !== 600 ? legacyInsurance : null),
+    },
     assumptions: {
       ...defaults,
-      ...s.assumptions,
-      opportunityOn: { ...defaults.opportunityOn, ...s.assumptions?.opportunityOn },
+      ...assumptions,
+      opportunityOn: { ...defaults.opportunityOn, ...assumptions.opportunityOn },
     },
   };
 }
@@ -68,7 +80,6 @@ export function differingSettings(list: SavedCar[]): string[] {
     ["ownership period", (a) => a.years],
     ["km per year", (a) => a.kmPerYear],
     ["expected return", (a) => a.expectedReturn],
-    ["insurance", (a) => a.insurancePerYear],
     ["payment method", (a) => a.financing],
   ];
   return checks.filter(([, f]) => new Set(list.map((s) => f(s.assumptions))).size > 1).map(([label]) => label);

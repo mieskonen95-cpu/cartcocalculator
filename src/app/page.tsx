@@ -114,7 +114,7 @@ export default function Home() {
         ...car,
         powertrain: fresh.powertrain,
         ...Object.fromEntries(
-          (["fuelConsumption", "electricConsumption", "co2", "totalMassKg", "commissionedOn", "modelYear"] as const)
+          (["fuelConsumption", "electricConsumption", "co2", "totalMassKg", "commissionedOn", "modelYear", "powerKw", "curbMassKg"] as const)
             .filter((k) => fresh[k] !== null)
             .map((k) => [k, fresh[k]]),
         ),
@@ -354,6 +354,7 @@ export default function Home() {
               )}
               {!ev && <Num label="CO₂ emissions" unit="g/km" value={car.co2} placeholder="?" onChange={(v) => setCarField("co2", v)} />}
               <Num label="Total mass" unit="kg" value={car.totalMassKg} placeholder="≈ 2000" onChange={(v) => setCarField("totalMassKg", v)} />
+              <Num label="Power" unit="kW" value={car.powerKw} onChange={(v) => setCarField("powerKw", v)} />
               {(() => {
                 const missing = [
                   !ev && !phev && car.fuelConsumption === null && "fuel consumption",
@@ -377,12 +378,38 @@ export default function Home() {
                   className="w-48 rounded-md border border-zinc-300 bg-white px-2 py-1 dark:border-zinc-700 dark:bg-zinc-900"
                 />
               </label>
+              <div className="border-t border-zinc-100 pt-3 dark:border-zinc-800">
+                <Num
+                  label="Insurance (your quote)"
+                  unit="€/year"
+                  step={10}
+                  value={car.insuranceOverride}
+                  placeholder={`≈ ${int(result.insurance.perYear)}`}
+                  onChange={(v) => setCarField("insuranceOverride", v)}
+                />
+                {result.insurance.fromQuote ? (
+                  <p className="mt-1.5 text-xs text-zinc-500">
+                    Using your quote. The estimate would be {eur(result.insurance.perYear)}/year.
+                  </p>
+                ) : (
+                  <p
+                    className={`mt-1.5 rounded-md px-3 py-2 text-xs ${
+                      result.insurance.insuranceClass === "high-power"
+                        ? "bg-amber-50 text-amber-900 dark:bg-amber-950 dark:text-amber-200"
+                        : "text-zinc-500"
+                    }`}
+                  >
+                    Estimate: {eur(result.insurance.perYear)}/year for traffic insurance + full cover.{" "}
+                    {result.insurance.reason} Based on a handful of real quotes, so enter your own quote
+                    {listing.registrationNumber ? ` (plate ${listing.registrationNumber})` : ""} for an exact figure.
+                  </p>
+                )}
+              </div>
             </Card>
 
             <Card title="Your situation">
               <Num label="Ownership period" unit="years" step={0.5} value={assumptions.years} onChange={(v) => setA("years", v ?? 1)} />
               <Num label="Driving" unit="km/year" step={1000} value={assumptions.kmPerYear} onChange={(v) => setA("kmPerYear", v ?? 0)} />
-              <Num label="Insurance" unit="€/year" step={50} value={assumptions.insurancePerYear} onChange={(v) => setA("insurancePerYear", v ?? 0)} />
             </Card>
 
             <Card title="Prices & assumptions">

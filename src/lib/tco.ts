@@ -1,4 +1,5 @@
 import type { Listing, Powertrain } from "./listing";
+import { estimateInsurance, type InsuranceEstimate } from "./insurance";
 import { annualVehicleTax, type TaxResult } from "./tax";
 
 export interface Assumptions {
@@ -12,7 +13,6 @@ export interface Assumptions {
   realWorldFactor: number;
   /** Share of km a plug-in hybrid drives on electricity (0–1). */
   phevElectricShare: number;
-  insurancePerYear: number;
   /** Maintenance + repairs + tyres, €/km, before the age multiplier. */
   maintenancePerKm: number;
   /** Annual depreciation as a fraction of current value. */
@@ -52,6 +52,10 @@ export interface CarInputs {
   modelYear: number | null;
   /** Manual vehicle tax override, €/year. */
   vehicleTaxOverride: number | null;
+  powerKw: number | null;
+  curbMassKg: number | null;
+  /** The user's own insurance quote, €/year; null uses the estimate. */
+  insuranceOverride: number | null;
 }
 
 export const DEFAULT_CONSUMPTION: Record<Powertrain, { fuel: number; electric: number }> = {
@@ -77,7 +81,6 @@ export function defaultAssumptions(powertrain: Powertrain): Assumptions {
     gasPrice: 2.0,
     realWorldFactor: 1.15,
     phevElectricShare: 0.4,
-    insurancePerYear: 600,
     maintenancePerKm: ev ? 0.03 : powertrain.startsWith("hybrid") || powertrain.startsWith("phev") ? 0.045 : 0.05,
     depreciationRate: ev ? 0.14 : 0.11,
     inspectionCost: 60,
@@ -104,6 +107,9 @@ export function carInputsFromListing(l: Listing): CarInputs {
     commissionedOn: l.commissionedOn,
     modelYear: l.modelYear,
     vehicleTaxOverride: null,
+    powerKw: l.powerKw,
+    curbMassKg: l.curbMassKg,
+    insuranceOverride: null,
   };
 }
 
@@ -122,6 +128,8 @@ export interface TcoResult {
   residualValue: number;
   tax: TaxResult;
   energyPerYear: number;
+  /** Estimated insurance, and what was actually used (the user's quote wins). */
+  insurance: InsuranceEstimate & { used: number; fromQuote: boolean };
   /** The selected financing option. */
   financing: Scenario;
   /** Both options side by side, for comparison. TCO = net cash cost + opportunity cost. */
@@ -301,10 +309,13 @@ export function computeTco(car: CarInputs, a: Assumptions, today = new Date()): 
   const ageMultiplier = Math.min(2, 1 + 0.04 * Math.max(0, midAge - 3));
   const maintenance = km * a.maintenancePerKm * ageMultiplier;
 
+  const insuranceEstimate = estimateInsurance(car);
+  const insurancePerYear = car.insuranceOverride ?? insuranceEstimate.perYear;
+
   const running: CostLine[] = [
     { key: "energy", label: car.powertrain === "electric" ? "Electricity" : "Fuel & charging", total: energyPerYear * years },
     { key: "tax", label: "Vehicle tax", total: taxPerYear * years },
-    { key: "insurance", label: "Insurance", total: a.insurancePerYear * years },
+    { key: "insurance", label: "Insurance", total: insurancePerYear * years },
     { key: "maintenance", label: "Maintenance, repairs & tyres", total: maintenance },
     { key: "inspections", label: "Inspections", total: inspectionsDuring(age, years) * a.inspectionCost },
   ];
@@ -334,6 +345,7 @@ export function computeTco(car: CarInputs, a: Assumptions, today = new Date()): 
     residualValue,
     tax,
     energyPerYear,
+    insurance: { ...insuranceEstimate, used: insurancePerYear, fromQuote: car.insuranceOverride !== null },
     financing,
     scenarios,
   };

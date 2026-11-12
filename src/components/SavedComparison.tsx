@@ -165,7 +165,11 @@ export function SavedComparison({
                 </td>
                 {rows.map((x) => (
                   <td key={x.s.id} className="border-b border-zinc-100 px-3 py-1.5 text-zinc-600 dark:border-zinc-800 dark:text-zinc-400">
+                    {k === "insurance" && !x.r.insurance.fromQuote ? "≈ " : ""}
                     {eur(line(x.r, k))}
+                    {k === "insurance" && x.r.insurance.insuranceClass === "high-power" && !x.r.insurance.fromQuote && (
+                      <span className="ml-1 text-xs text-amber-700 dark:text-amber-400">get quote</span>
+                    )}
                   </td>
                 ))}
               </tr>
