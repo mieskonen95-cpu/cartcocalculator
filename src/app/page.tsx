@@ -2,12 +2,21 @@
 
 import { useMemo, useState } from "react";
 import { CashflowChart } from "@/components/CashflowChart";
-import { looksLikeListingText, normaliseListingUrl, parseListingText, type Listing, type Powertrain } from "@/lib/listing";
+import {
+  looksLikeListingText,
+  mergeListing,
+  normaliseListingUrl,
+  parseListingText,
+  technicalSectionMissing,
+  type Listing,
+  type Powertrain,
+} from "@/lib/listing";
 import {
   type Assumptions,
   type CarInputs,
   carInputsFromListing,
   computeTco,
+  DEFAULT_CONSUMPTION,
   OUTFLOW_LABELS,
   type OutflowKind,
   type TcoResult,
@@ -47,6 +56,8 @@ export default function Home() {
   const [blockedUrl, setBlockedUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** Non-blocking hint shown after a paste (e.g. collapsed technical section). */
+  const [notice, setNotice] = useState<string | null>(null);
   const [listing, setListing] = useState<Listing | null>(null);
   const [car, setCar] = useState<CarInputs | null>(null);
   const [assumptions, setAssumptions] = useState<Assumptions | null>(null);
@@ -60,12 +71,34 @@ export default function Home() {
   function fromText(text: string): boolean {
     if (!looksLikeListingText(text)) return false;
     const l = parseListingText(text);
-    setError(
-      l.price === null
-        ? "Couldn't find the price in the pasted text. Enter it under Car details."
+    setBlockedUrl(null);
+    setError(null);
+
+    // A snippet without a price (e.g. just the technical section) adds to the car already loaded.
+    if (l.price === null && listing && car) {
+      const merged = mergeListing(listing, l);
+      const fresh = carInputsFromListing(merged);
+      setListing(merged);
+      setCar({
+        ...car,
+        powertrain: fresh.powertrain,
+        ...Object.fromEntries(
+          (["fuelConsumption", "electricConsumption", "co2", "totalMassKg", "commissionedOn", "modelYear"] as const)
+            .filter((k) => fresh[k] !== null)
+            .map((k) => [k, fresh[k]]),
+        ),
+      });
+      setNotice("Added the pasted details to this car.");
+      setInput("");
+      return true;
+    }
+
+    if (l.price === null) setError("Couldn't find the price in the pasted text. Enter it under Car details.");
+    setNotice(
+      technicalSectionMissing(text)
+        ? "The technical details (Tekniset tiedot) were missing from the paste. That section was probably collapsed. Open it on the listing, copy it, and paste it here to fill in the missing values."
         : null,
     );
-    setBlockedUrl(null);
     show({ ...l, price: l.price ?? 0 });
     return true;
   }
@@ -73,6 +106,7 @@ export default function Home() {
   async function load(e?: React.FormEvent) {
     e?.preventDefault();
     setError(null);
+    setNotice(null);
     if (fromText(input)) return;
 
     const target = normaliseListingUrl(input);
@@ -171,6 +205,7 @@ export default function Home() {
               onClick={() => {
                 setInput("");
                 setError(null);
+                setNotice(null);
                 setBlockedUrl(null);
               }}
               className="text-sm text-zinc-500 underline hover:text-zinc-700"
@@ -193,6 +228,9 @@ export default function Home() {
           )}
         </p>
       )}
+      {notice && (
+        <p className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-200">{notice}</p>
+      )}
       {!listing && (
         <ol className="mt-4 list-decimal space-y-1 pl-5 text-sm text-zinc-600 dark:text-zinc-400">
           <li>Open the car&apos;s listing on nettiauto.com.</li>
@@ -204,6 +242,10 @@ export default function Home() {
             long-press some text, tap <em>Select all</em>, then <em>Copy</em>.
           </li>
           <li>Paste it in the box above. The calculation starts automatically.</li>
+          <li>
+            If the <em>Tekniset tiedot</em> (technical details) section on the listing is collapsed, open it before
+            copying. Otherwise copy it afterwards and paste it here; it fills in what&apos;s missing.
+          </li>
         </ol>
       )}
       {!listing && (
@@ -261,10 +303,11 @@ export default function Home() {
               </label>
               {!ev && (
                 <Num
-                  label="Fuel consumption"
+                  label={phev ? "Fuel use on petrol" : "Fuel consumption"}
                   unit={car.powertrain === "gas" ? "kg/100km" : "l/100km"}
                   step={0.1}
                   value={car.fuelConsumption}
+                  placeholder={`≈ ${DEFAULT_CONSUMPTION[car.powertrain].fuel}`}
                   onChange={(v) => setCarField("fuelConsumption", v)}
                 />
               )}
@@ -274,11 +317,26 @@ export default function Home() {
                   unit="kWh/100km"
                   step={0.1}
                   value={car.electricConsumption}
+                  placeholder={`≈ ${DEFAULT_CONSUMPTION[car.powertrain].electric}`}
                   onChange={(v) => setCarField("electricConsumption", v)}
                 />
               )}
-              {!ev && <Num label="CO₂ emissions" unit="g/km" value={car.co2} onChange={(v) => setCarField("co2", v)} />}
-              <Num label="Total mass" unit="kg" value={car.totalMassKg} onChange={(v) => setCarField("totalMassKg", v)} />
+              {!ev && <Num label="CO₂ emissions" unit="g/km" value={car.co2} placeholder="?" onChange={(v) => setCarField("co2", v)} />}
+              <Num label="Total mass" unit="kg" value={car.totalMassKg} placeholder="≈ 2000" onChange={(v) => setCarField("totalMassKg", v)} />
+              {(() => {
+                const missing = [
+                  !ev && !phev && car.fuelConsumption === null && "fuel consumption",
+                  (ev || phev) && car.electricConsumption === null && "electricity consumption",
+                  !ev && car.co2 === null && "CO₂",
+                  car.totalMassKg === null && "total mass",
+                ].filter(Boolean);
+                return missing.length ? (
+                  <p className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:bg-amber-950 dark:text-amber-200">
+                    Not found in the paste: {missing.join(", ")}. Using typical values (≈) for now. Type in the real figures if
+                    you know them{car.co2 === null && !ev ? "; vehicle tax is a rough estimate without CO₂" : ""}.
+                  </p>
+                ) : null;
+              })()}
               <label className="flex items-center justify-between gap-4 text-sm">
                 <span>First in service</span>
                 <input
@@ -557,12 +615,14 @@ function Num({
   value,
   onChange,
   step = 1,
+  placeholder = "—",
 }: {
   label: string;
   unit: string;
   value: number | null;
   onChange: (v: number | null) => void;
   step?: number;
+  placeholder?: string;
 }) {
   return (
     <label className="flex items-center justify-between gap-4 text-sm">
@@ -573,7 +633,7 @@ function Num({
           inputMode="decimal"
           step={step}
           value={value ?? ""}
-          placeholder="—"
+          placeholder={placeholder}
           onChange={(e) => onChange(e.target.value === "" ? null : Number(e.target.value))}
           className="w-full min-w-0 bg-transparent px-2 py-1.5 text-right tabular-nums outline-none"
         />

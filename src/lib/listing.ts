@@ -231,7 +231,8 @@ function finnishFuelToEnglish(s: string): string {
 
 /** Value for a spec label: the rest of the label's line, or the next non-empty line. */
 function textField(lines: string[], label: string): string | null {
-  const re = new RegExp(`^${label}\\s*(?:[:\\t]\\s*|\\s{2,})?(.*)$`, "i");
+  // The label must end at a word boundary: "Polttoaine" must not match "Polttoaineen kulutus".
+  const re = new RegExp(`^${label}(?=$|[\\s:])\\s*(?:[:\\t]\\s*|\\s{2,})?(.*)$`, "i");
   for (let i = 0; i < lines.length; i++) {
     const m = lines[i].match(re);
     if (!m) continue;
@@ -250,7 +251,41 @@ const firstNumber = (s: string | null): number | null => {
 const EURO_LINE = /^(\d{1,3}(?: \d{3})*) ?€$/;
 
 export function looksLikeListingText(text: string): boolean {
-  return /Mittarilukema|Vuosimalli|Rekisterinumero|Käyttöönottopäivä/i.test(text);
+  return /Mittarilukema|Vuosimalli|Rekisterinumero|Käyttöönottopäivä|Omamassa|Kokonaismassa|Polttoaineen kulutus|Sähkön kulutus/i.test(text);
+}
+
+/**
+ * True when the "Tekniset tiedot" heading was copied but not its contents. That happens when
+ * the section is collapsed on the page: browsers don't copy collapsed content.
+ */
+export function technicalSectionMissing(text: string): boolean {
+  const t = text.replace(/\u00ad/g, "");
+  return /Tekniset tiedot/i.test(t) && !/^\s*(Teho|Omamassa|Kokonaismassa|Henkilömäärä|Polttoaineen kulutus|Sähkön kulutus)\s*$/im.test(t);
+}
+
+/**
+ * Fill in a listing with values from another paste (e.g. just the technical section).
+ * Values found in `extra` win; everything else is kept.
+ */
+export function mergeListing(base: Listing, extra: Listing): Listing {
+  const merged: Listing = { ...base };
+  const keys = [
+    "price", "modelYear", "mileageKm", "fuelConsumption", "electricConsumption", "co2", "curbMassKg",
+    "totalMassKg", "commissionedOn", "powerKw", "batteryKwh", "registrationNumber",
+  ] as const;
+  for (const k of keys) {
+    if (extra[k] !== null && extra[k] !== undefined) (merged as unknown as Record<string, unknown>)[k] = extra[k];
+  }
+  if (extra.fuelTypeRaw) {
+    merged.fuelTypeRaw = extra.fuelTypeRaw;
+    merged.powertrain = extra.powertrain;
+  } else {
+    // A battery or electricity consumption turns a hybrid into a plug-in hybrid.
+    const plugIn = (merged.electricConsumption ?? 0) > 0 || (merged.batteryKwh ?? 0) >= 5;
+    if (plugIn && merged.powertrain === "hybrid-petrol") merged.powertrain = "phev-petrol";
+    if (plugIn && merged.powertrain === "hybrid-diesel") merged.powertrain = "phev-diesel";
+  }
+  return merged;
 }
 
 export function parseListingText(raw: string): Listing {
@@ -267,8 +302,10 @@ export function parseListingText(raw: string): Listing {
     .slice(0, Math.max(0, priceIdx))
     .reverse()
     .find((l) => l && !/^PÄIVITETTY|^UUSI|^\d+H$/i.test(l));
-  const variant = priceIdx >= 0 ? lines.slice(priceIdx + 1).find((l) => l) : undefined;
-  const title = [titleAbove, variant && !/^Päivitetty/i.test(variant) ? variant : null].filter(Boolean).join(" ");
+  // The model/trim line follows the price, after optional VAT and financing lines.
+  const NOT_VARIANT = /^(sis\.?\s*alv|alv|\+\s*alv|veroton|alk\.|rahoitus|päivitetty|hinta)|€\s*\/\s*kk$/i;
+  const variant = priceIdx >= 0 ? lines.slice(priceIdx + 1, priceIdx + 6).find((l) => l && !NOT_VARIANT.test(l)) : undefined;
+  const title = [titleAbove, variant && !/^ID\s/.test(variant) ? variant : null].filter(Boolean).join(" ");
 
   const engine = field("Moottori") ?? field("Polttoaine");
   const fuelTypeRaw = engine ? finnishFuelToEnglish(engine.replace(/^[\d,]+ l,\s*/, "")) : null;
@@ -276,12 +313,19 @@ export function parseListingText(raw: string): Listing {
   const fuelLine = text.match(/yhdistetty:?\s*(\d+(?:,\d+)?)\s*l\/100/i);
   const elecLine = text.match(/yhdistetty:?\s*(\d+(?:,\d+)?)\s*kWh\/100/i);
   const electricConsumption = elecLine ? positive(elecLine[1]) : null;
-  const batteryKwh = firstNumber(field("Akkukapasiteetti"));
+  // Battery size: the spec label, or the summary line near the top ("13 kwh").
+  const batteryKwh =
+    firstNumber(field("Akkukapasiteetti")) ?? positive(text.match(/^(\d+(?:,\d+)?)\s*kwh$/im)?.[1]);
 
   const isPlugIn =
     electricConsumption !== null ||
     (batteryKwh !== null && batteryKwh >= 5) ||
-    /lataushybridi|plug-?in|phev/i.test(`${title} ${engine ?? ""}`);
+    /lataushybridi|plug-?in|phev|e-?hybrid/i.test(`${title} ${engine ?? ""}`);
+
+  // CO2: its own spec label, or else the value shown with the energy label (Energiamerkintä).
+  const co2 =
+    firstNumber(field("CO2 -päästöt") ?? field("CO2-päästöt")) ??
+    positive(text.match(/Energiamerkintä[\s\S]{0,80}?(\d+)\s*g\/km/i)?.[1]);
 
   const id = text.match(/^ID\s+(\d{5,})$/m)?.[1] ?? "pasted";
   const dateMatch = text.match(/Käyttöönottopäivä(?:määrä)?\s*[:\t]?\s*\n?\s*(\d{1,2})\.(\d{1,2})\.(\d{4})/i);
@@ -297,7 +341,7 @@ export function parseListingText(raw: string): Listing {
     powertrain: classifyPowertrain(fuelTypeRaw, isPlugIn),
     fuelConsumption: fuelLine ? positive(fuelLine[1]) : null,
     electricConsumption,
-    co2: firstNumber(field("CO2 -päästöt") ?? field("CO2-päästöt")),
+    co2,
     curbMassKg: firstNumber(field("Omamassa")),
     totalMassKg: firstNumber(field("Kokonaismassa")),
     commissionedOn: dateMatch ? `${dateMatch[3]}-${dateMatch[2].padStart(2, "0")}-${dateMatch[1].padStart(2, "0")}` : null,

@@ -1,7 +1,14 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { looksLikeListingText, normaliseListingUrl, parseListing, parseListingText } from "../src/lib/listing";
+import {
+  looksLikeListingText,
+  mergeListing,
+  normaliseListingUrl,
+  parseListing,
+  parseListingText,
+  technicalSectionMissing,
+} from "../src/lib/listing";
 import { annualVehicleTax } from "../src/lib/tax";
 import {
   carInputsFromListing,
@@ -212,6 +219,70 @@ describe("parseListingText (copied page text)", () => {
       commissionedOn: "2021-03-31",
       powertrain: "hybrid-diesel",
     });
+  });
+
+  it("handles a sparse plug-in hybrid listing (Seat Tarraco e-Hybrid)", () => {
+    const l = parseListingText(fixture("tarraco.txt"));
+    expect(l).toMatchObject({
+      id: "15875394",
+      title: "Seat Tarraco 1,4 PHEV 245 e-Hybrid Xperience Launch Edition DSG",
+      price: 31149, // 30 800 € + 349 € office fee
+      modelYear: 2023,
+      mileageKm: 31000,
+      powertrain: "phev-petrol",
+      co2: 37, // only shown with the energy label
+      batteryKwh: 13, // only in the summary line
+      commissionedOn: "2023-04-14",
+      // Not in this listing at all:
+      fuelConsumption: null,
+      totalMassKg: null,
+      curbMassKg: null,
+    });
+  });
+
+  it("doesn't mistake a regular hybrid for a plug-in because of site navigation", () => {
+    const text = fixture("tarraco.txt")
+      .replace("1,4 PHEV 245 e-Hybrid Xperience Launch Edition DSG", "1,8 Hybrid Active")
+      .replace(/^13 kwh\n/m, "");
+    expect(parseListingText(text).powertrain).toBe("hybrid-petrol");
+  });
+
+  it("spots a collapsed technical section", () => {
+    expect(technicalSectionMissing(fixture("tarraco.txt"))).toBe(true);
+    expect(technicalSectionMissing(a6)).toBe(false);
+    expect(technicalSectionMissing(tesla)).toBe(false);
+  });
+
+  it("reads a pasted technical section on its own and merges it in", () => {
+    const tech = fixture("tarraco-tech.txt");
+    expect(looksLikeListingText(tech)).toBe(true);
+    expect(technicalSectionMissing(tech)).toBe(false);
+    const extra = parseListingText(tech);
+    expect(extra).toMatchObject({
+      price: null,
+      powerKw: 180,
+      batteryKwh: 13,
+      curbMassKg: 1868,
+      totalMassKg: 2390,
+      co2: 37,
+      fuelConsumption: 1.9,
+      electricConsumption: 16.7,
+    });
+    const base = parseListingText(fixture("tarraco.txt"));
+    const merged = mergeListing(base, extra);
+    expect(merged).toMatchObject({
+      title: base.title,
+      price: 31149,
+      mileageKm: 31000,
+      powertrain: "phev-petrol",
+      totalMassKg: 2390,
+      fuelConsumption: 1.9,
+      electricConsumption: 16.7,
+    });
+    // The official plug-in fuel figure (1.9) is not used as petrol-mode consumption.
+    expect(carInputsFromListing(merged).fuelConsumption).toBeNull();
+    // A plain hybrid becomes a plug-in once a battery shows up.
+    expect(mergeListing({ ...base, powertrain: "hybrid-petrol" }, extra).powertrain).toBe("phev-petrol");
   });
 
   it("maps Finnish fuel names", () => {

@@ -1,0 +1,37 @@
+Tekniset tiedot
+Teho
+180 kW / 245 Hv
+Akku­kapasiteetti
+13 kWh
+Sähköinen kantama
+48 km
+Huippunopeus
+205 km/h
+Kiihtyvyys (0-100)
+7,5 s
+Henkilömäärä
+5
+Ovien lkm
+5
+Ohjauslaite
+Vasemmalla
+Omamassa
+1 868 kg
+Kokonaismassa
+2 390 kg
+Vetomassa (jarrullinen)
+1 800 kg
+Vetomassa (ei jarruja)
+750 kg
+CO2 -päästöt
+37 g/km
+Lataustyyppi
+Type 2
+Latausteho AC
+11 kW
+Akkutakuu
+96 kk / 160 000 km
+Polttoaineen kulutus
+Yhdistetty: 1,9 l/100 km
+Sähkön kulutus
+yhdistetty: 16,7 kWh/100 km

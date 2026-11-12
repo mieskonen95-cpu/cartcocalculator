@@ -94,7 +94,9 @@ export function carInputsFromListing(l: Listing): CarInputs {
   return {
     price: l.price ?? 0,
     powertrain: l.powertrain,
-    fuelConsumption: l.fuelConsumption,
+    // A plug-in's official fuel figure is a weighted mix dominated by electric driving, so it
+    // can't be used for the share driven on fuel. Leave it empty to use a typical value.
+    fuelConsumption: l.powertrain.startsWith("phev") ? null : l.fuelConsumption,
     electricConsumption: l.electricConsumption,
     co2: l.co2,
     // Listings often show only curb mass; gross mass is typically ~500 kg more.
@@ -165,9 +167,8 @@ export function energyCostPerYear(car: CarInputs, a: Assumptions): number {
     case "phev-diesel": {
       const price = car.powertrain === "phev-diesel" ? a.dieselPrice : a.petrolPrice;
       const s = Math.min(1, Math.max(0, a.phevElectricShare));
-      // Official PHEV fuel figures are heavily weighted to electric driving; use the default
-      // combustion-mode figure for the fuel share.
-      const fuelMode = d.fuel * a.realWorldFactor;
+      // For plug-ins, `fuelConsumption` means consumption when running on petrol/diesel.
+      const fuelMode = (car.fuelConsumption ?? d.fuel) * a.realWorldFactor;
       return per100(s * kwh * a.electricityPrice + (1 - s) * fuelMode * price);
     }
     case "gas":
