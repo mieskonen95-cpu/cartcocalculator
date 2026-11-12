@@ -32,6 +32,9 @@ function upgrade(s: SavedCar): SavedCar {
       vehicleTaxOverride: s.car.vehicleTaxOverride ?? null,
       powerKw: s.car.powerKw ?? s.listing.powerKw ?? null,
       curbMassKg: s.car.curbMassKg ?? s.listing.curbMassKg ?? null,
+      energyPerKmOverride: s.car.energyPerKmOverride ?? null,
+      maintenancePerKmOverride: s.car.maintenancePerKmOverride ?? null,
+      inspectionsPerYearOverride: s.car.inspectionsPerYearOverride ?? null,
       insuranceOverride:
         s.car.insuranceOverride ?? (legacyInsurance !== undefined && legacyInsurance !== 600 ? legacyInsurance : null),
     },

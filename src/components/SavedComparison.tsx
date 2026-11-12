@@ -21,7 +21,7 @@ import {
   settingDifferences,
   SHARED_KEYS,
 } from "@/lib/saved";
-import { computeTco, type CostLine } from "@/lib/tco";
+import { computeTco, type CostLine, defaultAssumptions, depreciationRateFor, type TcoResult } from "@/lib/tco";
 
 export const COST_COLORS: Record<CostLine["key"], string> = {
   depreciation: "bg-indigo-500",
@@ -80,6 +80,7 @@ interface Column {
   insuranceEstimated?: boolean;
   insuranceHighPower?: boolean;
   saved?: SavedCar;
+  r?: TcoResult;
 }
 
 export function SavedComparison({
@@ -129,6 +130,7 @@ export function SavedComparison({
         insuranceEstimated: !r.insurance.fromQuote,
         insuranceHighPower: r.insurance.insuranceClass === "high-power",
         saved: s,
+        r,
       };
     });
     if (!reference) return cars;
@@ -175,13 +177,207 @@ export function SavedComparison({
     ...(anyRides ? [["rides", RIDES_COLOR] as [SegmentKey, string]] : []),
     ...keys.map((k) => [k, COST_COLORS[k]] as [SegmentKey, string]),
   ];
+  const update = (target: SavedCar, fn: (s: SavedCar) => SavedCar) =>
+    onUpdateAll(saved.map((x) => (x.id === target.id ? fn(x) : x)));
+  const setCarFields = (s: SavedCar, patch: Partial<SavedCar["car"]>): SavedCar => ({ ...s, car: { ...s.car, ...patch } });
+  const setAssumptionFields = (s: SavedCar, patch: Partial<SavedCar["assumptions"]>): SavedCar => ({
+    ...s,
+    assumptions: { ...s.assumptions, ...patch },
+  });
+  const km = (s: SavedCar) => Math.max(1, s.assumptions.kmPerYear * s.assumptions.years);
+
+  /** Turn an edited cost total (over the period) into the setting that produces it. */
+  function applyCostEdit(s: SavedCar, k: SegmentKey, v: number): SavedCar {
+    const years = Math.max(0.1, s.assumptions.years);
+    switch (k) {
+      case "depreciation":
+        return setAssumptionFields(s, { depreciationRate: depreciationRateFor(s.car.price, v, years) });
+      case "energy":
+        return setCarFields(s, { energyPerKmOverride: v / km(s) });
+      case "maintenance":
+        return setCarFields(s, { maintenancePerKmOverride: v / km(s) });
+      case "tax":
+        return setCarFields(s, { vehicleTaxOverride: v / years });
+      case "insurance":
+        return setCarFields(s, { insuranceOverride: v / years });
+      case "inspections":
+        return setCarFields(s, { inspectionsPerYearOverride: v / years });
+      default:
+        return s;
+    }
+  }
+  function resetCost(s: SavedCar, k: SegmentKey): SavedCar {
+    switch (k) {
+      case "depreciation":
+        return setAssumptionFields(s, { depreciationRate: defaultAssumptions(s.car.powertrain).depreciationRate });
+      case "energy":
+        return setCarFields(s, { energyPerKmOverride: null });
+      case "maintenance":
+        return setCarFields(s, { maintenancePerKmOverride: null });
+      case "tax":
+        return setCarFields(s, { vehicleTaxOverride: null });
+      case "insurance":
+        return setCarFields(s, { insuranceOverride: null });
+      case "inspections":
+        return setCarFields(s, { inspectionsPerYearOverride: null });
+      default:
+        return s;
+    }
+  }
+  function costEdited(s: SavedCar, k: SegmentKey): boolean {
+    switch (k) {
+      case "depreciation":
+        return Math.abs(s.assumptions.depreciationRate - defaultAssumptions(s.car.powertrain).depreciationRate) > 1e-9;
+      case "energy":
+        return s.car.energyPerKmOverride !== null;
+      case "maintenance":
+        return s.car.maintenancePerKmOverride !== null;
+      case "tax":
+        return s.car.vehicleTaxOverride !== null;
+      case "insurance":
+        return s.car.insuranceOverride !== null;
+      case "inspections":
+        return s.car.inspectionsPerYearOverride !== null;
+      default:
+        return false;
+    }
+  }
+
+  const inputRows: [string, (c: Column) => React.ReactNode][] = [
+    [
+      "Price",
+      (c) =>
+        c.saved ? (
+          <EditableNumber
+            value={c.saved.car.price}
+            display={eur(c.saved.car.price)}
+            label={`Price, ${c.title}`}
+            onCommit={(v) => update(c.saved!, (s) => setCarFields(s, { price: Math.max(0, v) }))}
+          />
+        ) : (
+          "—"
+        ),
+    ],
+    [
+      "Type",
+      (c) =>
+        c.saved ? (
+          <select
+            aria-label={`Type, ${c.title}`}
+            value={c.saved.car.powertrain}
+            onChange={(e) => update(c.saved!, (s) => setCarFields(s, { powertrain: e.target.value as Powertrain }))}
+            className="max-w-full rounded border border-transparent bg-transparent py-0.5 hover:border-zinc-300 dark:hover:border-zinc-700"
+          >
+            {(Object.keys(POWERTRAIN_SHORT) as Powertrain[]).map((p) => (
+              <option key={p} value={p}>
+                {POWERTRAIN_SHORT[p]}
+              </option>
+            ))}
+          </select>
+        ) : (
+          c.info.type
+        ),
+    ],
+    [
+      "Year",
+      (c) =>
+        c.saved ? (
+          <EditableNumber
+            value={c.saved.car.modelYear ?? 0}
+            display={c.saved.car.modelYear ? String(c.saved.car.modelYear) : "—"}
+            label={`Model year, ${c.title}`}
+            onCommit={(v) => update(c.saved!, (s) => setCarFields(s, { modelYear: v > 1900 ? Math.round(v) : null }))}
+          />
+        ) : (
+          "—"
+        ),
+    ],
+    [
+      "Mileage",
+      (c) =>
+        c.saved ? (
+          <EditableNumber
+            value={c.saved.listing.mileageKm ?? 0}
+            display={c.saved.listing.mileageKm !== null ? `${int(c.saved.listing.mileageKm)} km` : "—"}
+            label={`Mileage, ${c.title}`}
+            onCommit={(v) => update(c.saved!, (s) => ({ ...s, listing: { ...s.listing, mileageKm: Math.max(0, Math.round(v)) } }))}
+          />
+        ) : (
+          "—"
+        ),
+    ],
+    [
+      "Period",
+      (c) =>
+        c.saved ? (
+          <EditableNumber
+            value={c.saved.assumptions.years}
+            display={`${c.saved.assumptions.years} y`}
+            step={0.5}
+            label={`Ownership period, ${c.title}`}
+            onCommit={(v) => update(c.saved!, (s) => setAssumptionFields(s, { years: Math.max(0.5, v) }))}
+          />
+        ) : (
+          `${reference?.years ?? "—"} y`
+        ),
+    ],
+    [
+      "Driving",
+      (c) =>
+        c.saved ? (
+          <EditableNumber
+            value={c.saved.assumptions.kmPerYear}
+            display={`${int(c.saved.assumptions.kmPerYear)} km/y`}
+            step={1000}
+            label={`Km per year, ${c.title}`}
+            onCommit={(v) => update(c.saved!, (s) => setAssumptionFields(s, { kmPerYear: Math.max(0, Math.round(v)) }))}
+          />
+        ) : (
+          `${int(reference?.kmPerYear ?? 0)} km/y`
+        ),
+    ],
+    [
+      "Payment",
+      (c) =>
+        c.saved ? (
+          <select
+            aria-label={`Payment, ${c.title}`}
+            value={c.saved.assumptions.financing}
+            onChange={(e) => update(c.saved!, (s) => setAssumptionFields(s, { financing: e.target.value as "cash" | "loan" }))}
+            className="max-w-full rounded border border-transparent bg-transparent py-0.5 hover:border-zinc-300 dark:hover:border-zinc-700"
+          >
+            <option value="cash">Lump sum</option>
+            <option value="loan">Financed</option>
+          </select>
+        ) : (
+          c.info.payment
+        ),
+    ],
+    [
+      "Down payment",
+      (c) =>
+        c.saved && c.saved.assumptions.financing === "loan" ? (
+          <EditableNumber
+            value={c.saved.assumptions.downPayment}
+            display={`${eur(c.r!.financing.equity)} · ${Math.round(c.saved.assumptions.loanInterestRate * 1000) / 10} %`}
+            step={500}
+            label={`Down payment, ${c.title}`}
+            onCommit={(v) => update(c.saved!, (s) => setAssumptionFields(s, { downPayment: Math.max(0, v) }))}
+          />
+        ) : (
+          "—"
+        ),
+    ],
+  ];
+
   const segmentLabel = (k: SegmentKey) =>
     k === "transport" ? "Ticket / bike" : k === "rides" ? "Taxi rides (Uber, Bolt)" : COST_LABELS[k];
 
   return (
     <section className="mt-10 min-w-0 rounded-xl border border-zinc-200 p-5 dark:border-zinc-800">
       <h2 className="font-medium">Saved cars ({saved.length})</h2>
-      <p className="mt-0.5 text-sm text-zinc-500">Stored in this browser on this device. Click Open to change a car&apos;s inputs.</p>
+      <p className="mt-0.5 text-sm text-zinc-500">Stored in this browser on this device. Click any underlined value in the table to change it; edited costs can be
+        reset with ↺. Open loads a car into the calculator above.</p>
 
       {differences.length > 0 && (
         <div className="mt-3 rounded-md bg-amber-50 px-3 py-3 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-200">
@@ -403,20 +599,12 @@ export function SavedComparison({
             </tr>
           </thead>
           <tbody>
-            {(
-              [
-                ["Price", (c) => c.info.price],
-                ["Type", (c) => c.info.type],
-                ["Year · km", (c) => c.info.yearKm],
-                ["Period", (c) => c.info.ownership],
-                ["Payment", (c) => c.info.payment],
-              ] as [string, (c: Column) => string][]
-            ).map(([label, f]) => (
+            {inputRows.map(([label, render]) => (
               <tr key={label}>
                 <td className="sticky left-0 bg-[var(--background)] py-2 pr-3 text-zinc-500">{label}</td>
                 {columns.map((c) => (
                   <Cell key={c.id} alt={c.alternative}>
-                    {f(c)}
+                    {render(c)}
                   </Cell>
                 ))}
               </tr>
@@ -452,14 +640,24 @@ export function SavedComparison({
                   <Cell key={c.id} alt={c.alternative} muted>
                     {c.costs[k] === undefined ? (
                       "—"
+                    ) : c.saved && isEditableCost(k) ? (
+                      <EditableNumber
+                        value={c.costs[k]!}
+                        display={`${k === "insurance" && c.insuranceEstimated ? "≈ " : ""}${eur(c.costs[k]!)}`}
+                        label={`${segmentLabel(k)}, ${c.title}`}
+                        edited={costEdited(c.saved, k)}
+                        onCommit={(v) => update(c.saved!, (s) => applyCostEdit(s, k, v))}
+                        onReset={() => update(c.saved!, (s) => resetCost(s, k))}
+                        suffix={
+                          k === "insurance" && c.insuranceEstimated && c.insuranceHighPower ? (
+                            <span className="ml-1 text-xs text-amber-700 dark:text-amber-400">get quote</span>
+                          ) : null
+                        }
+                      />
                     ) : (
-                      <>
-                        {k === "insurance" && c.insuranceEstimated ? "≈ " : ""}
+                      <span title={k === "interest" || k === "opportunity" ? "Calculated: change it via payment and returns settings" : undefined}>
                         {eur(c.costs[k]!)}
-                        {k === "insurance" && c.insuranceEstimated && c.insuranceHighPower && (
-                          <span className="ml-1 text-xs text-amber-700 dark:text-amber-400">get quote</span>
-                        )}
-                      </>
+                      </span>
                     )}
                   </Cell>
                 ))}
@@ -492,6 +690,81 @@ export function SavedComparison({
         </table>
       </div>
     </section>
+  );
+}
+
+const EDITABLE_COSTS: SegmentKey[] = ["depreciation", "energy", "tax", "insurance", "maintenance", "inspections"];
+function isEditableCost(k: SegmentKey): boolean {
+  return EDITABLE_COSTS.includes(k);
+}
+
+/** A value that turns into a number field when clicked. Enter or leaving the field saves; Esc cancels. */
+function EditableNumber({
+  value,
+  display,
+  label,
+  onCommit,
+  onReset,
+  edited,
+  step = 1,
+  suffix,
+}: {
+  value: number;
+  display: string;
+  label: string;
+  onCommit: (v: number) => void;
+  onReset?: () => void;
+  edited?: boolean;
+  step?: number;
+  suffix?: React.ReactNode;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const commit = () => {
+    if (draft !== null && draft.trim() !== "" && Number.isFinite(Number(draft))) onCommit(Number(draft));
+    setDraft(null);
+  };
+  if (draft !== null) {
+    return (
+      <input
+        autoFocus
+        type="number"
+        inputMode="decimal"
+        step={step}
+        aria-label={label}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") commit();
+          if (e.key === "Escape") setDraft(null);
+        }}
+        className="w-24 rounded border border-indigo-500 bg-white px-1.5 py-0.5 text-right tabular-nums outline-none dark:bg-zinc-900"
+      />
+    );
+  }
+  return (
+    <span className="inline-flex flex-wrap items-center gap-x-1">
+      <button
+        type="button"
+        aria-label={`Edit ${label}`}
+        title="Click to edit"
+        onClick={() => setDraft(String(Math.round(value * 100) / 100))}
+        className="cursor-text rounded px-0.5 text-left underline decoration-zinc-300 decoration-dotted underline-offset-4 hover:bg-indigo-50 hover:decoration-indigo-500 dark:decoration-zinc-600 dark:hover:bg-indigo-950"
+      >
+        {display}
+      </button>
+      {suffix}
+      {edited && (
+        <span className="inline-flex items-center gap-0.5 text-xs text-indigo-600 dark:text-indigo-400">
+          edited
+          {onReset && (
+            <button type="button" onClick={onReset} aria-label={`Reset ${label} to the calculated value`} title="Back to the calculated value" className="px-0.5 hover:text-indigo-800">
+              ↺
+            </button>
+          )}
+        </span>
+      )}
+    </span>
   );
 }
 

@@ -66,6 +66,10 @@ export interface CarInputs {
   curbMassKg: number | null;
   /** The user's own insurance quote, €/year; null uses the estimate. */
   insuranceOverride: number | null;
+  /** Your own figures for cost lines (edited in the comparison table); null = calculated. */
+  energyPerKmOverride: number | null;
+  maintenancePerKmOverride: number | null;
+  inspectionsPerYearOverride: number | null;
 }
 
 export const DEFAULT_CONSUMPTION: Record<Powertrain, { fuel: number; electric: number }> = {
@@ -122,6 +126,9 @@ export function carInputsFromListing(l: Listing): CarInputs {
     powerKw: l.powerKw,
     curbMassKg: l.curbMassKg,
     insuranceOverride: null,
+    energyPerKmOverride: null,
+    maintenancePerKmOverride: null,
+    inspectionsPerYearOverride: null,
   };
 }
 
@@ -326,6 +333,13 @@ export function simulateOwnership(
   };
 }
 
+/** Yearly depreciation rate that loses `amount` of `price` over `years`. */
+export function depreciationRateFor(price: number, amount: number, years: number): number {
+  if (price <= 0 || years <= 0) return 0;
+  const residual = Math.min(price, Math.max(0, price - amount));
+  return Math.min(0.95, Math.max(0, 1 - Math.pow(residual / price, 1 / years)));
+}
+
 export function computeTco(car: CarInputs, a: Assumptions, today = new Date()): TcoResult {
   const years = Math.max(0.1, a.years);
   const km = a.kmPerYear * years;
@@ -347,17 +361,20 @@ export function computeTco(car: CarInputs, a: Assumptions, today = new Date()): 
   // Running costs rise with age: +4 % per year beyond 3 years old, capped at 2×.
   const midAge = age + years / 2;
   const ageMultiplier = Math.min(2, 1 + 0.04 * Math.max(0, midAge - 3));
-  const maintenance = km * a.maintenancePerKm * ageMultiplier;
+  const maintenance = car.maintenancePerKmOverride !== null ? km * car.maintenancePerKmOverride : km * a.maintenancePerKm * ageMultiplier;
+  const energyTotal = car.energyPerKmOverride !== null ? km * car.energyPerKmOverride : energyPerYear * years;
+  const inspections =
+    car.inspectionsPerYearOverride !== null ? car.inspectionsPerYearOverride * years : inspectionsDuring(age, years) * a.inspectionCost;
 
   const insuranceEstimate = estimateInsurance(car);
   const insurancePerYear = car.insuranceOverride ?? insuranceEstimate.perYear;
 
   const running: CostLine[] = [
-    { key: "energy", label: car.powertrain === "electric" ? "Electricity" : "Fuel & charging", total: energyPerYear * years },
+    { key: "energy", label: car.powertrain === "electric" ? "Electricity" : "Fuel & charging", total: energyTotal },
     { key: "tax", label: "Vehicle tax", total: taxPerYear * years },
     { key: "insurance", label: "Insurance", total: insurancePerYear * years },
     { key: "maintenance", label: "Maintenance, repairs & tyres", total: maintenance },
-    { key: "inspections", label: "Inspections", total: inspectionsDuring(age, years) * a.inspectionCost },
+    { key: "inspections", label: "Inspections", total: inspections },
   ];
   const runningTotal = running.reduce((s, l) => s + l.total, 0);
   const months = Math.max(1, Math.round(years * 12));
@@ -387,7 +404,7 @@ export function computeTco(car: CarInputs, a: Assumptions, today = new Date()): 
     perKm: km > 0 ? total / km : 0,
     residualValue,
     tax,
-    energyPerYear,
+    energyPerYear: energyTotal / years,
     insurance: { ...insuranceEstimate, used: insurancePerYear, fromQuote: car.insuranceOverride !== null },
     financing,
     scenarios,

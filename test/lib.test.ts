@@ -17,6 +17,7 @@ import {
   inspectionsDuring,
   simulateOwnership,
   grownInvestment,
+  depreciationRateFor,
   type Assumptions,
 } from "../src/lib/tco";
 import { commonValue, differingSettings, harmonize, loadSaved, setForAll, settingDifferences, SHARED_KEYS, storeSaved, upsert } from "../src/lib/saved";
@@ -517,5 +518,33 @@ describe("car-free alternatives", () => {
     const chart = computeAlternative("bike", DEFAULT_ALTERNATIVES, { ...a, opportunityMode: "chart" });
     expect(chart.lostReturns).toBeGreaterThan(0);
     expect(chart.total).toBe(chart.spend);
+  });
+});
+
+describe("cost line overrides (edited in the comparison table)", () => {
+  const l = parseListingText(fixture("a6.txt"));
+  const car = carInputsFromListing(l);
+  const a = defaultAssumptions(l.powertrain);
+  const day = new Date("2026-11-12");
+  const line = (r: ReturnType<typeof computeTco>, k: string) => r.lines.find((x) => x.key === k)!.total;
+
+  it("turns a depreciation amount back into a yearly rate", () => {
+    const rate = depreciationRateFor(car.price, 6000, 3);
+    expect(line(computeTco(car, { ...a, depreciationRate: rate }, day), "depreciation")).toBeCloseTo(6000, 6);
+    expect(depreciationRateFor(10000, 99999, 3)).toBe(0.95);
+    expect(depreciationRateFor(10000, -5, 3)).toBe(0);
+  });
+
+  it("fuel and maintenance overrides are per km, so they scale with driving", () => {
+    const edited = { ...car, energyPerKmOverride: 0.1, maintenancePerKmOverride: 0.05 };
+    const r = computeTco(edited, a, day);
+    expect(line(r, "energy")).toBeCloseTo(0.1 * 45000, 6);
+    expect(line(r, "maintenance")).toBeCloseTo(0.05 * 45000, 6);
+    const more = computeTco(edited, { ...a, kmPerYear: 30000 }, day);
+    expect(line(more, "energy")).toBeCloseTo(0.1 * 90000, 6);
+  });
+
+  it("inspections override is per year", () => {
+    expect(line(computeTco({ ...car, inspectionsPerYearOverride: 80 }, { ...a, years: 5 }, day), "inspections")).toBe(400);
   });
 });

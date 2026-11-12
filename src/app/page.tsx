@@ -754,7 +754,11 @@ export default function Home() {
               persist(list);
               // Keep the calculator in step if the car open above was changed.
               const open = savedId ? list.find((x) => x.id === savedId) : undefined;
-              if (open && listing) setAssumptions(open.assumptions);
+              if (open && listing) {
+                setListing(open.listing);
+                setCar(open.car);
+                setAssumptions(open.assumptions);
+              }
               setSaveMsg(null);
             }}
           />
