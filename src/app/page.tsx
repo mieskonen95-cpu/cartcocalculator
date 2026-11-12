@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { CashflowChart } from "@/components/CashflowChart";
-import type { Listing, Powertrain } from "@/lib/listing";
+import { looksLikeListingText, normaliseListingUrl, parseListingText, type Listing, type Powertrain } from "@/lib/listing";
 import {
   type Assumptions,
   type CarInputs,
@@ -42,27 +42,54 @@ const BAR_COLORS: Record<string, string> = {
 };
 
 export default function Home() {
-  const [url, setUrl] = useState("");
+  const [input, setInput] = useState("");
+  /** Link the user pasted that we couldn't fetch, so we can offer to open it. */
+  const [blockedUrl, setBlockedUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [listing, setListing] = useState<Listing | null>(null);
   const [car, setCar] = useState<CarInputs | null>(null);
   const [assumptions, setAssumptions] = useState<Assumptions | null>(null);
 
-  async function load(e: React.FormEvent) {
-    e.preventDefault();
-    setLoading(true);
+  function show(l: Listing) {
+    setListing(l);
+    setCar(carInputsFromListing(l));
+    setAssumptions(defaultAssumptions(l.powertrain));
+  }
+
+  function fromText(text: string): boolean {
+    if (!looksLikeListingText(text)) return false;
+    const l = parseListingText(text);
+    setError(
+      l.price === null
+        ? "Couldn't find the price in the pasted text. Enter it under Car details."
+        : null,
+    );
+    setBlockedUrl(null);
+    show({ ...l, price: l.price ?? 0 });
+    return true;
+  }
+
+  async function load(e?: React.FormEvent) {
+    e?.preventDefault();
     setError(null);
+    if (fromText(input)) return;
+
+    const target = normaliseListingUrl(input);
+    if (!target) {
+      setError("That doesn't look like a nettiauto listing. Paste the listing page's text (see the steps below) or its link.");
+      return;
+    }
+    setLoading(true);
     try {
-      const res = await fetch(`/api/listing?url=${encodeURIComponent(url)}`);
+      const res = await fetch(`/api/listing?url=${encodeURIComponent(target.url)}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Something went wrong.");
-      const l: Listing = data.listing;
-      setListing(l);
-      setCar(carInputsFromListing(l));
-      setAssumptions(defaultAssumptions(l.powertrain));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setBlockedUrl(null);
+      show(data.listing);
+    } catch {
+      setBlockedUrl(target.url);
+      setError("nettiauto.com doesn't let this app fetch listings. Copy the listing page's text and paste it here instead.");
     } finally {
       setLoading(false);
     }
@@ -91,9 +118,7 @@ export default function Home() {
       seller: null,
     };
     setError(null);
-    setListing(l);
-    setCar(carInputsFromListing(l));
-    setAssumptions(defaultAssumptions(l.powertrain));
+    show(l);
   }
 
   const result = useMemo(() => (car && assumptions ? computeTco(car, assumptions) : null), [car, assumptions]);
@@ -110,27 +135,77 @@ export default function Home() {
         <h1 className="text-3xl font-semibold tracking-tight">What will this car really cost?</h1>
         <p className="mt-2 text-zinc-600 dark:text-zinc-400">
           Paste a nettiauto.com listing to estimate the total cost of ownership: depreciation, fuel, vehicle tax,
-          insurance and upkeep.
+          insurance, upkeep, financing and lost investment returns.
         </p>
       </header>
 
-      <form onSubmit={load} className="flex flex-col gap-2 sm:flex-row">
-        <input
-          type="url"
+      <form onSubmit={load} className="space-y-2">
+        <textarea
           required
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          placeholder="https://www.nettiauto.com/audi/a6/15911646"
-          className="flex-1 rounded-lg border border-zinc-300 bg-white px-4 py-3 text-base outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 dark:border-zinc-700 dark:bg-zinc-900 dark:focus:ring-indigo-900"
+          rows={3}
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onPaste={(e) => {
+            // Calculate straight away when a whole listing page is pasted.
+            const text = e.clipboardData.getData("text");
+            if (looksLikeListingText(text)) {
+              e.preventDefault();
+              setInput(text);
+              fromText(text);
+            }
+          }}
+          placeholder="Paste the listing page here (select all, copy, paste)"
+          aria-label="Listing text or link"
+          className="block w-full resize-y rounded-lg border border-zinc-300 bg-white px-4 py-3 text-base outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 dark:border-zinc-700 dark:bg-zinc-900 dark:focus:ring-indigo-900"
         />
-        <button
-          disabled={loading}
-          className="rounded-lg bg-indigo-600 px-6 py-3 font-medium text-white hover:bg-indigo-700 disabled:opacity-60"
-        >
-          {loading ? "Fetching…" : "Calculate"}
-        </button>
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            disabled={loading}
+            className="rounded-lg bg-indigo-600 px-6 py-3 font-medium text-white hover:bg-indigo-700 disabled:opacity-60"
+          >
+            {loading ? "Fetching…" : "Calculate"}
+          </button>
+          {input && (
+            <button
+              type="button"
+              onClick={() => {
+                setInput("");
+                setError(null);
+                setBlockedUrl(null);
+              }}
+              className="text-sm text-zinc-500 underline hover:text-zinc-700"
+            >
+              Clear
+            </button>
+          )}
+        </div>
       </form>
-      {error && <p className="mt-3 text-sm text-rose-600">{error}</p>}
+      {error && (
+        <p className="mt-3 text-sm text-rose-600">
+          {error}
+          {blockedUrl && (
+            <>
+              {" "}
+              <a href={blockedUrl} target="_blank" rel="noreferrer" className="font-medium underline">
+                Open the listing
+              </a>
+            </>
+          )}
+        </p>
+      )}
+      {!listing && (
+        <ol className="mt-4 list-decimal space-y-1 pl-5 text-sm text-zinc-600 dark:text-zinc-400">
+          <li>Open the car&apos;s listing on nettiauto.com.</li>
+          <li>
+            Select the whole page and copy it: <kbd className="rounded border border-zinc-300 px-1 text-xs dark:border-zinc-700">Ctrl</kbd>+
+            <kbd className="rounded border border-zinc-300 px-1 text-xs dark:border-zinc-700">A</kbd>, then{" "}
+            <kbd className="rounded border border-zinc-300 px-1 text-xs dark:border-zinc-700">Ctrl</kbd>+
+            <kbd className="rounded border border-zinc-300 px-1 text-xs dark:border-zinc-700">C</kbd> (⌘ on Mac). On a phone,
+            long-press some text, tap <em>Select all</em>, then <em>Copy</em>.
+          </li>
+          <li>Paste it in the box above. The calculation starts automatically.</li>
+        </ol>
+      )}
       {!listing && (
         <button type="button" onClick={startManual} className="mt-3 text-sm text-indigo-600 underline hover:text-indigo-800">
           Or enter the car&apos;s details manually

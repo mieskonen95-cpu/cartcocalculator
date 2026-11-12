@@ -210,3 +210,101 @@ export function parseListing(html: string, url: string): Listing {
     seller: typeof seller.name === "string" ? seller.name : null,
   };
 }
+
+/* ------------------------------------------------------------------------------------------ *
+ * Parsing text copied from a listing page (select all → copy → paste).                        *
+ * Used when nettiauto.com refuses server-side requests: the user's own browser has the page,  *
+ * so they paste its text instead. Labels are Finnish; values follow on the same line          *
+ * (after a tab or colon) or on the next line, depending on browser.                           *
+ * ------------------------------------------------------------------------------------------ */
+
+/** Finnish fuel names → the English names used by `classifyPowertrain`. */
+function finnishFuelToEnglish(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/lataushybridi/g, "hybrid plug-in")
+    .replace(/hybridi/g, "hybrid")
+    .replace(/bensiini/g, "petrol")
+    .replace(/sähkö/g, "electric")
+    .replace(/kaasu/g, "gas");
+}
+
+/** Value for a spec label: the rest of the label's line, or the next non-empty line. */
+function textField(lines: string[], label: string): string | null {
+  const re = new RegExp(`^${label}\\s*(?:[:\\t]\\s*|\\s{2,})?(.*)$`, "i");
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(re);
+    if (!m) continue;
+    if (m[1].trim()) return m[1].trim();
+    const next = lines.slice(i + 1).find((l) => l.trim());
+    if (next) return next.trim();
+  }
+  return null;
+}
+
+const firstNumber = (s: string | null): number | null => {
+  const m = s?.match(/\d[\d ]*(?:,\d+)?/);
+  return m ? num(m[0].replace(/ /g, "")) : null;
+};
+
+const EURO_LINE = /^(\d{1,3}(?: \d{3})*) ?€$/;
+
+export function looksLikeListingText(text: string): boolean {
+  return /Mittarilukema|Vuosimalli|Rekisterinumero|Käyttöönottopäivä/i.test(text);
+}
+
+export function parseListingText(raw: string): Listing {
+  const text = raw.replace(/[   ]/g, " ").replace(/­/g, "").replace(/\r/g, "");
+  const lines = text.split("\n").map((l) => l.trim());
+  const field = (label: string) => textField(lines, label);
+
+  // The asking price is the first euro amount on its own line; the title sits just above it.
+  const priceIdx = lines.findIndex((l) => EURO_LINE.test(l));
+  const basePrice = priceIdx >= 0 ? firstNumber(lines[priceIdx]) : null;
+  const officeFee = firstNumber(field("Toimistomaksu"));
+  const price = basePrice !== null ? basePrice + (officeFee ?? 0) : null;
+  const titleAbove = lines
+    .slice(0, Math.max(0, priceIdx))
+    .reverse()
+    .find((l) => l && !/^PÄIVITETTY|^UUSI|^\d+H$/i.test(l));
+  const variant = priceIdx >= 0 ? lines.slice(priceIdx + 1).find((l) => l) : undefined;
+  const title = [titleAbove, variant && !/^Päivitetty/i.test(variant) ? variant : null].filter(Boolean).join(" ");
+
+  const engine = field("Moottori") ?? field("Polttoaine");
+  const fuelTypeRaw = engine ? finnishFuelToEnglish(engine.replace(/^[\d,]+ l,\s*/, "")) : null;
+
+  const fuelLine = text.match(/yhdistetty:?\s*(\d+(?:,\d+)?)\s*l\/100/i);
+  const elecLine = text.match(/yhdistetty:?\s*(\d+(?:,\d+)?)\s*kWh\/100/i);
+  const electricConsumption = elecLine ? positive(elecLine[1]) : null;
+  const batteryKwh = firstNumber(field("Akkukapasiteetti"));
+
+  const isPlugIn =
+    electricConsumption !== null ||
+    (batteryKwh !== null && batteryKwh >= 5) ||
+    /lataushybridi|plug-?in|phev/i.test(`${title} ${engine ?? ""}`);
+
+  const id = text.match(/^ID\s+(\d{5,})$/m)?.[1] ?? "pasted";
+  const dateMatch = text.match(/Käyttöönottopäivä(?:määrä)?\s*[:\t]?\s*\n?\s*(\d{1,2})\.(\d{1,2})\.(\d{4})/i);
+
+  return {
+    id,
+    url: "",
+    title: title || "Pasted listing",
+    price,
+    modelYear: firstNumber(field("Vuosimalli")),
+    mileageKm: firstNumber(field("Mittarilukema")),
+    fuelTypeRaw: engine,
+    powertrain: classifyPowertrain(fuelTypeRaw, isPlugIn),
+    fuelConsumption: fuelLine ? positive(fuelLine[1]) : null,
+    electricConsumption,
+    co2: firstNumber(field("CO2 -päästöt") ?? field("CO2-päästöt")),
+    curbMassKg: firstNumber(field("Omamassa")),
+    totalMassKg: firstNumber(field("Kokonaismassa")),
+    commissionedOn: dateMatch ? `${dateMatch[3]}-${dateMatch[2].padStart(2, "0")}-${dateMatch[1].padStart(2, "0")}` : null,
+    powerKw: firstNumber(field("Teho")),
+    batteryKwh,
+    imageUrl: null,
+    registrationNumber: field("Rekisterinumero"),
+    seller: null,
+  };
+}

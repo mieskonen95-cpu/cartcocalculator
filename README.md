@@ -6,11 +6,15 @@ insurance, maintenance, inspections and loan interest.
 
 ## How it works
 
-1. `GET /api/listing?url=…` fetches the listing server-side and parses it (`src/lib/listing.ts`)
-   from the page's schema.org JSON-LD, its embedded `productInfo` data and the spec table.
-2. The browser computes the TCO (`src/lib/tco.ts`) and vehicle tax (`src/lib/tax.ts`).
+1. **Paste the listing page (main path).** The user opens the listing, selects all, copies and
+   pastes it into the app. `parseListingText` in `src/lib/listing.ts` reads the Finnish spec labels
+   (Mittarilukema, Moottori, Kokonaismassa, …) in the browser. Nothing is fetched from nettiauto.com.
+2. **Paste a link.** `GET /api/listing?url=…` tries to fetch and parse the page server-side.
+   nettiauto.com currently refuses these requests (HTTP 403), and the app then asks the user
+   to paste the page text instead.
+3. **Manual entry** as a last resort.
+4. The browser computes the TCO (`src/lib/tco.ts`) and vehicle tax (`src/lib/tax.ts`).
    Every parsed value and assumption is editable, and the results update live.
-3. If a listing can't be fetched, the user can enter the car's details manually.
 
 ## Development
 
@@ -32,6 +36,7 @@ every push. The free tier sleeps when idle, so the first request after a break i
 - **Vehicle tax:** EV basic tax and driving-power tax rates are the official 2026 figures. The
   CO₂ → basic tax curve above ~100 g/km is an *approximation*. It should be replaced with the
   official tables (ajoneuvoverolaki 1281/2003, VEROTAULUKKO 1 / 1 A).
-- **Fetching listings:** nettiauto.com may refuse automated requests. Check its terms of use and
-  consider asking Alma Media for permission or API access before deploying publicly.
+- **Fetching listings:** nettiauto.com refuses server-side requests (HTTP 403), so the link option
+  doesn't work in practice. Pasting the page text is the supported path. Proper link support
+  would need permission or API access from Alma Media.
 - Depreciation, maintenance and insurance are rule-of-thumb defaults.

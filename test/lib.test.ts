@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { normaliseListingUrl, parseListing } from "../src/lib/listing";
+import { looksLikeListingText, normaliseListingUrl, parseListing, parseListingText } from "../src/lib/listing";
 import { annualVehicleTax } from "../src/lib/tax";
 import {
   carInputsFromListing,
@@ -158,5 +158,68 @@ describe("tco helpers", () => {
     expect(r.perMonth).toBeCloseTo(r.total / 36, 6);
     expect(r.scenarios.cash.tco).toBeCloseTo(r.total, 6); // default is a lump sum
     expect(r.lines.find((x) => x.key === "inspections")!.total).toBe(120); // ages ~5.6→8.6: due at 6 and 8
+  });
+});
+
+describe("parseListingText (copied page text)", () => {
+  const a6 = fixture("a6.txt");
+  const tesla = fixture("tesla.txt");
+
+  it("recognises listing text", () => {
+    expect(looksLikeListingText(a6)).toBe(true);
+    expect(looksLikeListingText("https://www.nettiauto.com/audi/a6/15911646")).toBe(false);
+  });
+
+  it("matches the HTML parser for a diesel hybrid", () => {
+    const fromText = parseListingText(a6);
+    const fromHtml = parseListing(fixture("a6.html"), "https://www.nettiauto.com/audi/a6/15911646");
+    for (const k of [
+      "price", "modelYear", "mileageKm", "powertrain", "fuelConsumption", "electricConsumption",
+      "co2", "curbMassKg", "totalMassKg", "commissionedOn", "powerKw", "registrationNumber",
+    ] as const) {
+      expect(fromText[k], k).toEqual(fromHtml[k]);
+    }
+    expect(fromText.id).toBe("15911646");
+    expect(fromText.title).toBe("Audi A6 Avant Business 40 TDI MHEV quattro S tronic");
+    expect(fromText.fuelTypeRaw).toBe("2,0 l, Hybridi (diesel/sähkö)");
+  });
+
+  it("parses an EV", () => {
+    expect(parseListingText(tesla)).toMatchObject({
+      price: 40129,
+      modelYear: 2023,
+      mileageKm: 33000,
+      powertrain: "electric",
+      electricConsumption: 16.9,
+      co2: null,
+      curbMassKg: 2054,
+      totalMassKg: null,
+      commissionedOn: "2022-12-01",
+      batteryKwh: 82,
+      powerKw: 258,
+      registrationNumber: "NOY-656",
+    });
+  });
+
+  it("handles label and value on one line (tab-separated copy)", () => {
+    const tabbed = a6.replace(/^(Mittarilukema|Vuosimalli|Kokonaismassa|Moottori|Käyttöönottopäivä|Toimistomaksu)\n/gm, "$1\t");
+    expect(tabbed).not.toBe(a6);
+    expect(parseListingText(tabbed)).toMatchObject({
+      price: 17339,
+      mileageKm: 268000,
+      modelYear: 2021,
+      totalMassKg: 2425,
+      commissionedOn: "2021-03-31",
+      powertrain: "hybrid-diesel",
+    });
+  });
+
+  it("maps Finnish fuel names", () => {
+    const t = (m: string) => parseListingText(`Auto\n10 000 €\nMoottori\n${m}\nVuosimalli\n2020`).powertrain;
+    expect(t("1,5 l, Bensiini")).toBe("petrol");
+    expect(t("2,0 l, Diesel")).toBe("diesel");
+    expect(t("Sähkö")).toBe("electric");
+    expect(t("1,8 l, Hybridi (bensiini/sähkö)")).toBe("hybrid-petrol");
+    expect(t("2,0 l, Lataushybridi (bensiini/sähkö)")).toBe("phev-petrol");
   });
 });
